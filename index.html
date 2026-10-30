@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Caja Veterinaria</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0f766e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Caja Vet">
+<link rel="apple-touch-icon" href="icon-192.png">
 <style>
 :root{--bg:#f5f7f6;--card:#fff;--tx:#17211e;--mut:#66756f;--bd:#dde4e1;--ac:#0f766e;--ac2:#e6f4f1;--ok:#15803d;--bad:#b91c1c;--warn:#b45309}
 @media (prefers-color-scheme:dark){:root{--bg:#101614;--card:#18211e;--tx:#e8efec;--mut:#8fa19a;--bd:#2a3732;--ac:#2dd4bf;--ac2:#13302b;--ok:#4ade80;--bad:#f87171;--warn:#fbbf24}}
@@ -547,6 +552,7 @@ function exportCsv(){
 }
 
 render();
+if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>
 </body>
 </html>
