@@ -745,7 +745,8 @@ function vVender(){
   drawCart(); q.focus();
 }
 const pname = p => p.presentation ? p.name + ' · ' + p.presentation : p.name;
-const presKey = (b, pr) => String(b).trim() + '|' + String(pr||'').trim().toLowerCase();
+const sameFam = (a, b) => a.barcode ? a.barcode===b.barcode : (!b.barcode && a.name.trim().toLowerCase()===b.name.trim().toLowerCase());
+const presKey = d => (d.barcode ? 'c:' + String(d.barcode).trim() : 'n:' + String(d.name).trim().toLowerCase()) + '|' + String(d.presentation||'').trim().toLowerCase();
 let pickCb = null;
 function pickPres(list, title, cb){
   pickCb = cb;
@@ -761,7 +762,7 @@ function suggest(t){
   box.innerHTML = r.length ? `<div class="sug">${r.map(p=>`<div onclick="addProduct('${p.id}')"><span>${esc(pname(p))}</span><span class="mut">${fmt(p.price)} · stock ${p.stock}</span></div>`).join('')}</div>` : '';
 }
 function addByCode(code){
-  code = String(code).trim();
+  code = String(code).trim(); if(!code) return;
   const same = S.products.filter(x => x.barcode === code), sale = same.filter(x => !x.internal);
   if(same.length && !sale.length){ alert(same[0].name + ' es de uso interno y no se vende.'); return; }
   if(sale.length > 1) return pickPres(sale, 'Elegí la presentación', p => addProduct(p.id));
@@ -891,7 +892,7 @@ function logStock(p, qty, reason, note){
   persist('stocklog');
 }
 function stockScan(code){
-  code = String(code).trim();
+  code = String(code).trim(); if(!code) return;
   const same = S.products.filter(x => x.barcode===code);
   const q = $('#sq'); if(q) q.value='';
   const quick = (fn) => same.length > 1 ? pickPres(same, 'Elegí la presentación', fn) : fn(same[0]);
@@ -963,12 +964,13 @@ function drawFound(){
   const f = $('#found'); if(!f) return;
   if(!stockFound){ f.innerHTML=''; return; }
   const code = stockFound.code || (stockFound.product && stockFound.product.barcode) || '';
-  const list = S.products.filter(x => x.barcode===code).sort((x, y) => (x.presentation||'').localeCompare(y.presentation||''));
+  const base = stockFound.product && S.products.find(x => x.id===stockFound.product.id);
+  const list = (code ? S.products.filter(x => x.barcode===code) : base ? S.products.filter(x => sameFam(base, x)) : []).sort((x, y) => (x.presentation||'').localeCompare(y.presentation||''));
   if(!list.length){ f.innerHTML = `<div class="stat"><div class="found"><div>Código <b>${esc(code)}</b> no está cargado.</div><button class="b" onclick="newProductDlg('${esc(code)}')">Cargar producto</button></div></div>`; return; }
-  f.innerHTML = list.map(p => `<div class="stat"><div class="found"><div><b>${esc(p.name)}</b>${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}<div class="mut">Código ${esc(p.barcode)}${p.category?' · '+esc(p.category):''}</div></div>
+  f.innerHTML = list.map(p => `<div class="stat"><div class="found"><div><b>${esc(p.name)}</b>${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}<div class="mut">${p.barcode ? 'Código ' + esc(p.barcode) : 'Sin código'}${p.category?' · '+esc(p.category):''}</div></div>
     ${p.internal?'':`<div class="p">${fmt(p.price)}</div>`}<div>Stock: <b class="${p.stock<=0?'out':''}">${p.stock}</b></div></div>
     <div class="row" style="margin-top:10px"><div class="fit"><button class="b" onclick="addStockDlg('${p.id}')">+ Agregar unidades</button></div><div class="fit"><button class="s" onclick="useDlg('${p.id}')">Registrar uso</button></div>${p.contains && S.products.some(x => x.id===p.contains.to) ? `<div class="fit"><button class="s" onclick="openDlg('${p.id}')">Abrir</button></div>` : ''}<div class="fit"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></div></div></div>`).join('') +
-    `<div style="margin-top:8px"><button class="s" onclick="newProductDlg('${esc(code)}')">+ Otra presentación de este código</button></div>`;
+    `<div style="margin-top:8px"><button class="s" onclick="newProductDlg('${esc(code)}', '${list[0].id}')">+ Otra presentación${code ? ' de este código' : ' de este producto'}</button></div>`;
 }
 const minOf = p => p.min ?? 3;
 function drawList(){
@@ -986,12 +988,12 @@ function addStockDlg(id){
 function addStock(id){ const p=S.products.find(x=>x.id===id); const n=Math.round(num($('#au').value)); p.stock+=n; persist('products'); if(n) logStock(p, n, 'Ingreso', ''); closeModal(); render(); stockFound={code:p.barcode,product:p}; drawFound(); }
 function productForm(p, code){
   p = p || {name:'',barcode:code||'',presentation:'',price:'',cost:'',stock:1,category:'',min:3};
-  return `<div class="field"><label>Código de barras</label><input id="pb" value="${esc(p.barcode)}"></div>
+  return `<div class="field"><label>Código de barras (opcional)</label><input id="pb" value="${esc(p.barcode)}"></div>
     <div class="field"><label>Nombre</label><input id="pn" value="${esc(p.name)}"></div>
     <div class="field"><label>Presentación (opcional)</label><input id="ppr" list="presl" value="${esc(p.presentation||'')}" placeholder="Caja, Blister, Unidad…"><datalist id="presl"><option value="Caja"><option value="Blister"><option value="Unidad"><option value="Frasco"></datalist>
       <div class="mut" style="font-size:12px;margin-top:4px">Si se vende de más de una forma con el mismo código, cargá cada una con su presentación, precio y stock.</div></div>
     ${(() => {
-      const sib = S.products.filter(x => x.barcode===p.barcode && x.id!==p.id);
+      const sib = S.products.filter(x => x.id!==p.id && sameFam(p, x));
       if(!sib.length) return '<div class="mut field" style="font-size:12px">Si esta presentación se abre para sacar otras más chicas (caja → blisters o unidades), cargá primero la más chica y después editá esta para indicar cuántas trae.</div>';
       const c = p.contains || {};
       return `<div class="field"><label>Al abrirla, trae (opcional)</label><div class="row"><div><input id="pcq" inputmode="numeric" value="${c.qty||''}" placeholder="Ej: 3"></div><div><select id="pct"><option value="">—</option>${sib.map(x => `<option value="${x.id}"${c.to===x.id?' selected':''}>${esc(x.presentation||x.name)}</option>`).join('')}</select></div></div></div>`;
@@ -1001,10 +1003,11 @@ function productForm(p, code){
     <div><label>Categoría</label><input id="pcat" list="catl" value="${esc(p.category||'')}" placeholder="Alimento, farmacia…"><datalist id="catl">${cats().map(c=>`<option value="${esc(c)}">`).join('')}</datalist></div></div>
     <div class="field"><label style="display:flex;gap:8px;align-items:center;font-size:14px"><input type="checkbox" id="pint" ${p.internal?'checked':''}> Uso interno: no se vende, solo se lleva la cantidad</label></div>`;
 }
-function newProductDlg(code){
-  const ex = code ? S.products.filter(x => x.barcode===code) : [];
+function newProductDlg(code, fromId){
+  const base = fromId && S.products.find(x => x.id===fromId);
+  const ex = code ? S.products.filter(x => x.barcode===code) : base ? S.products.filter(x => sameFam(base, x)) : [];
   const prefill = ex[0] ? {...ex[0], id:undefined, presentation:'', price:'', stock:1, internal:false} : null;
-  modal(`<h2>${ex.length ? 'Nueva presentación' : 'Nuevo producto'}</h2>${ex.length ? `<p class="mut" style="margin-top:0">Ya existe <b>${esc(ex.map(pname).join(', '))}</b> con este código. Cargá la otra forma de venta con su presentación, precio y stock.</p>` : ''}${productForm(prefill,code)}<div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveProduct()">Guardar</button></div></div>`);
+  modal(`<h2>${ex.length ? 'Nueva presentación' : 'Nuevo producto'}</h2>${ex.length ? `<p class="mut" style="margin-top:0">Ya existe <b>${esc(ex.map(pname).join(', '))}</b>${code ? ' con este código' : ''}. Cargá la otra forma de venta con su presentación, precio y stock.</p>` : ''}${productForm(prefill,code)}<div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveProduct()">Guardar</button></div></div>`);
   (code ? $('#pn') : $('#pb')).focus();
 }
 function editProductDlg(id){
@@ -1014,11 +1017,11 @@ function editProductDlg(id){
 function saveProduct(id){
   const d = { barcode:$('#pb').value.trim(), name:$('#pn').value.trim(), presentation:$('#ppr').value.trim(), price:num($('#pp').value), cost:num($('#pc').value), stock:Math.round(num($('#ps').value)), min:Math.round(num($('#pm').value)), category:$('#pcat').value.trim(), internal:$('#pint').checked };
   { const cq = Math.round(num($('#pcq') ? $('#pcq').value : 0)), ct = $('#pct') ? $('#pct').value : ''; d.contains = cq > 0 && ct && ct !== id ? {to:ct, qty:cq} : null; }
-  if(!d.name || !d.barcode || (d.price<=0 && !d.internal)){ alert(d.internal ? 'Código y nombre son obligatorios.' : 'Código, nombre y precio son obligatorios (el precio no hace falta si es de uso interno).'); return; }
-  const dup = S.products.find(p => p.id!==id && presKey(p.barcode, p.presentation)===presKey(d.barcode, d.presentation));
-  if(dup){ alert(d.presentation ? 'Ya existe "' + pname(dup) + '" con ese código y esa presentación.' : 'Ya existe "' + dup.name + '" con ese código. Si es otra forma de venta, poné la presentación (Caja, Blister…).'); return; }
-  const others = S.products.filter(p => p.id!==id && p.barcode===d.barcode);
-  if(!id && others.length && !confirm('Ya existe "' + pname(others[0]) + '" con ese código.\n\n¿Agregar "' + pname(d) + '" como otra presentación / forma de venta?')) return;
+  if(!d.name || (d.price<=0 && !d.internal)){ alert(d.internal ? 'El nombre es obligatorio.' : 'Nombre y precio son obligatorios (el precio no hace falta si es de uso interno).'); return; }
+  const dup = S.products.find(p => p.id!==id && presKey(p)===presKey(d));
+  if(dup){ const w = d.barcode ? 'con ese código' : 'con ese nombre'; alert(d.presentation ? 'Ya existe "' + pname(dup) + '" ' + w + ' y esa presentación.' : 'Ya existe "' + dup.name + '" ' + w + '. Si es otra forma de venta, poné la presentación (Caja, Blister…).'); return; }
+  const others = S.products.filter(p => p.id!==id && sameFam(d, p));
+  if(!id && others.length && !confirm('Ya existe "' + pname(others[0]) + '" ' + (d.barcode ? 'con ese código' : 'con ese nombre') + '.\n\n¿Agregar "' + pname(d) + '" como otra presentación / forma de venta?')) return;
   if(id) Object.assign(S.products.find(p=>p.id===id), d); else { const p={id:uid(),...d}; S.products.push(p); stockFound={code:d.barcode,product:p}; }
   persist('products'); closeModal(); render(); drawFound();
   if(fast && !id) $('#msg').textContent = 'Producto cargado: '+d.name;
@@ -1053,18 +1056,18 @@ function importCsv(file){
     const head = parse(lines[0]).map(h => h.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,''));
     const ix = n => head.indexOf(n);
     const iC=ix('codigo'), iN=ix('nombre'), iP=ix('precio'), iCo=ix('costo'), iS=ix('stock'), iCat=ix('categoria'), iM=ix('minimo'), iPr=ix('presentacion');
-    if(iC<0 || iN<0 || iP<0){ alert('Faltan columnas. Necesito al menos: codigo, nombre, precio. Opcionales: costo, stock, categoria, minimo, presentacion.'); return; }
+    if(iN<0 || iP<0){ alert('Faltan columnas. Necesito al menos: nombre y precio (codigo es opcional). Opcionales: costo, stock, categoria, minimo, presentacion.'); return; }
     let nuevos=0, act=0, skip=0;
     lines.slice(1).forEach(l => {
-      const c = parse(l), barcode = c[iC], name = c[iN], price = num(c[iP]);
-      if(!barcode || !name || price<=0){ skip++; return; }
+      const c = parse(l), barcode = iC>=0 ? (c[iC]||'') : '', name = c[iN], price = num(c[iP]);
+      if(!name || price<=0){ skip++; return; }
       const d = { barcode, name, price };
       if(iPr>=0) d.presentation = c[iPr] || '';
       if(iCo>=0) d.cost = num(c[iCo]);
       if(iS>=0) d.stock = Math.round(num(c[iS]));
       if(iCat>=0) d.category = c[iCat];
       if(iM>=0 && c[iM]) d.min = Math.round(num(c[iM]));
-      const ex = S.products.find(p => presKey(p.barcode, p.presentation)===presKey(barcode, d.presentation));
+      const ex = S.products.find(p => presKey(p)===presKey(d));
       if(ex){ Object.assign(ex, d); act++; } else { S.products.push({id:uid(), cost:0, stock:0, min:3, category:'', ...d}); nuevos++; }
     });
     persist('products'); render();
