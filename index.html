@@ -823,7 +823,7 @@ function importCsv(file){
 }
 
 function drawServices(){
-  $('#svl').innerHTML = S.services.length ? `<table>${S.services.map(s=>`<tr><td>${esc(s.name)}</td><td class="r">${fmt(s.price)}</td><td class="r"><button class="d" onclick="delService('${s.id}')">✕</button></td></tr>`).join('')}</table>` : '<div class="empty">Sin servicios guardados</div>';
+  $('#svl').innerHTML = S.services.length ? `<table>${S.services.map(s=>`<tr><td>${esc(s.name)}</td><td class="r">${fmt(s.price)}</td><td class="r" style="white-space:nowrap"><button class="s" onclick="editServiceDlg('${s.id}')">Editar</button> <button class="d" aria-label="Eliminar" onclick="delService('${s.id}')">✕</button></td></tr>`).join('')}</table>` : '<div class="empty">Sin servicios guardados</div>';
 }
 function saveService(){
   const name = $('#svn').value.trim(), price = num($('#svp').value);
@@ -831,6 +831,21 @@ function saveService(){
   const ex = S.services.find(s => s.name.toLowerCase()===name.toLowerCase());
   if(ex) ex.price = price; else S.services.push({id:uid(), name, price});
   persist('services'); $('#svn').value=''; $('#svp').value=''; drawServices();
+}
+function editServiceDlg(id){
+  const s = S.services.find(x => x.id===id); if(!s) return;
+  modal(`<h2>Editar servicio</h2>
+    <div class="field"><label>Nombre</label><input id="en" value="${esc(s.name)}"></div>
+    <div class="field"><label>Precio</label><input id="ep" inputmode="decimal" value="${s.price}"></div>
+    <div class="row"><div class="fit"><button class="d" onclick="delService('${id}');closeModal()">Eliminar</button></div><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveEditedService('${id}')">Guardar</button></div></div>`);
+  $('#en').select(); $('#ep').addEventListener('keydown', e => { if(e.key==='Enter') saveEditedService(id); });
+}
+function saveEditedService(id){
+  const s = S.services.find(x => x.id===id); if(!s) return;
+  const name = $('#en').value.trim(), price = num($('#ep').value);
+  if(!name || price<=0){ alert('Poné nombre y precio.'); return; }
+  if(S.services.some(x => x.id!==id && x.name.toLowerCase()===name.toLowerCase())){ alert('Ya hay un servicio con ese nombre.'); return; }
+  s.name = name; s.price = price; persist('services'); closeModal(); drawServices();
 }
 function delService(id){ S.services = S.services.filter(s => s.id!==id); persist('services'); drawServices(); }
 
