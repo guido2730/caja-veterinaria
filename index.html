@@ -394,23 +394,21 @@ function movDlg(type){
   modal(`<h2>${type==='egreso'?'Registrar egreso':'Ingreso manual'}</h2>
     <div class="field"><label>Concepto</label><input id="mc" placeholder="${type==='egreso'?'Ej: proveedor, luz, retiro…':'Ej: seña, otro ingreso…'}"></div>
     <div class="row field"><div><label>Monto</label><input id="ma" inputmode="decimal"></div>
-    <div><label>Medio</label><select id="mm">${mopts('efectivo')}</select></div></div>
-    ${type==='egreso'?`<div class="field"><label>Tipo de egreso</label><select id="mk"><option value="gasto">Gasto (luz, alquiler, sueldos…)</option><option value="compra">Compra de mercadería (no resta ganancia)</option></select></div>`:''}
-    <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveMov('${type}')">Guardar</button></div></div>`);
+    <div><label>Medio</label><select id="mm">${mopts('efectivo')}</select></div></div>    <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveMov('${type}')">Guardar</button></div></div>`);
   $('#mc').focus();
 }
 const egresoDlg = () => movDlg('egreso'), ingresoDlg = () => movDlg('ingreso');
 function saveMov(type){
   const amount = num($('#ma').value), concept = $('#mc').value.trim();
   if(!concept || amount<=0){ alert('Completá concepto y un monto mayor a 0.'); return; }
-  S.movements.push({id:uid(), ts:new Date().toISOString(), type, concept, amount, method:$('#mm').value, sessionId:openSession().id, items:[], kind: type==='egreso' ? $('#mk').value : undefined});
+  S.movements.push({id:uid(), ts:new Date().toISOString(), type, concept, amount, method:$('#mm').value, sessionId:openSession().id, items:[]});
   persist('movements'); closeModal(); render();
 }
 function movTable(ms){
   if(!ms.length) return '<div class="empty">Sin movimientos</div>';
   const cur = openSession();
   return `<table><tr><th>Hora</th><th>Concepto</th><th class="hide-s">Medio</th><th class="r">Monto</th><th></th></tr>${ms.map(m=>`<tr><td class="${m.voided?'void':''}">${fdt(m.ts)}</td>
-    <td class="${m.voided?'void':''}">${esc(m.concept)}${m.kind==='compra'?' <span class="tag">compra</span>':''}${m.who?` <span class="mut">· ${esc(m.who)}</span>`:''}${m.items&&m.items.length?`<div class="mut" style="font-size:12px">${m.items.map(i=>`${i.qty}× ${esc(i.name)}`).join(', ')}</div>`:''}</td>
+    <td class="${m.voided?'void':''}">${esc(m.concept)}${m.who?` <span class="mut">· ${esc(m.who)}</span>`:''}${m.items&&m.items.length?`<div class="mut" style="font-size:12px">${m.items.map(i=>`${i.qty}× ${esc(i.name)}`).join(', ')}</div>`:''}</td>
     <td class="hide-s"><span class="tag">${ML(m.method)}</span></td>
     <td class="r ${m.voided?'void':m.type==='ingreso'?'in':'out'}">${m.type==='ingreso'?'+':'−'}${fmt(m.amount)}</td>
     <td class="r">${m.voided?'<span class="mut">anulado</span>':(cur&&m.sessionId===cur.id?`<button class="d" onclick="anular('${m.id}')">Anular</button>`:'')}</td></tr>`).join('')}</table>`;
@@ -511,7 +509,7 @@ function cobrar(){
   const concept = 'Venta' + (adj ? ` (${adj>0?'+':''}${adj}%)` : '');
   const parts = [{method:pay[0].method, amount:first}, ...extra.map(p=>({method:p.method, amount:p.amount}))];
   parts.forEach((p,i) => S.movements.push({id:uid(), ts, type:'ingreso', concept, amount:p.amount, method:p.method, sessionId, saleId, who:who.trim(),
-    items: i===0 ? cart.map(l=>({productId:l.productId,name:l.name,price:l.price,qty:l.qty,cost:l.productId?((S.products.find(p=>p.id===l.productId)||{}).cost||0):0})) : []}));
+    items: i===0 ? cart.map(l=>({productId:l.productId,name:l.name,price:l.price,qty:l.qty})) : []}));
   persist('products'); persist('movements');
   cart=[]; pay=[{method:'efectivo',amount:0}]; adj=0; who=''; render();
 }
@@ -660,8 +658,7 @@ function saveService(){
 function delService(id){ S.services = S.services.filter(s => s.id!==id); persist('services'); drawServices(); }
 
 /* ===== GANANCIAS =====
-   Ganancia neta = ventas − costo de lo vendido − gastos.
-   Las compras de mercadería no se restan (ya se resta el costo de lo que se vende).
+   Ganancia = ventas (ingresos) − gastos (egresos). Las anuladas no cuentan.
    Se calcula siempre desde los movimientos, así que se actualiza sola con cada venta o gasto. */
 let ganKind = 'dia';
 const GK = {
@@ -678,19 +675,14 @@ function periodRange(kind, off){
   else { a = new Date(n.getFullYear()+off, 0, 1); b = new Date(n.getFullYear()+off+1, 0, 1); }
   return [a, b];
 }
-const itemCost = i => i.cost ?? ((S.products.find(p => p.id===i.productId) || {}).cost) ?? 0;
 function agg(a, b){
-  const r = {ing:0, cmv:0, gas:0, comp:0, nocost:new Set()};
+  const r = {ing:0, gas:0};
   S.movements.forEach(m => {
     if(m.voided) return;
     const t = new Date(m.ts); if(t < a || t >= b) return;
-    if(m.type==='ingreso'){
-      r.ing += m.amount;
-      (m.items||[]).forEach(i => { const c = itemCost(i); if(i.productId && !c) r.nocost.add(i.name); r.cmv += c*i.qty; });
-    } else if(m.kind==='compra') r.comp += m.amount;
-    else r.gas += m.amount;
+    if(m.type==='ingreso') r.ing += m.amount; else r.gas += m.amount;
   });
-  r.bruta = r.ing - r.cmv; r.neta = r.bruta - r.gas;
+  r.neta = r.ing - r.gas;
   return r;
 }
 const plabel = (k, a) => k==='dia' ? a.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'})
@@ -702,23 +694,21 @@ function vGan(){
     const r = agg(a,b), p = agg(pa,pb);
     const dl = p.neta ? Math.round((r.neta-p.neta)/Math.abs(p.neta)*100) : null;
     return `<div class="stat"><small>${GK[k].cur}</small><b class="${r.neta<0?'out':'in'}">${fmt(r.neta)}</b>
-      <div class="mut" style="font-size:12px;margin-top:6px">Ventas ${fmt(r.ing)}<br>Costo de lo vendido ${fmt(r.cmv)}<br>Gastos ${fmt(r.gas)}</div>
+      <div class="mut" style="font-size:12px;margin-top:6px">Ventas ${fmt(r.ing)}<br>Gastos ${fmt(r.gas)}</div>
       ${dl===null?'':`<div style="font-size:12px;margin-top:4px" class="${dl<0?'out':'in'}">${dl<0?'▼':'▲'} ${Math.abs(dl)}% vs ${GK[k].prev}</div>`}</div>`;
   }).join('');
-  const [ya,yb] = periodRange('anio',0), yr = agg(ya,yb);
-  const warn = yr.nocost.size ? `<p class="low" style="margin:12px 0 0">⚠ ${yr.nocost.size} producto(s) vendido(s) sin costo cargado (${[...yr.nocost].slice(0,4).map(esc).join(', ')}${yr.nocost.size>4?'…':''}). Su ganancia se cuenta completa; cargá el costo en Stock para que sea exacta.</p>` : '';
   const rows = [];
   for(let i = GK[ganKind].n-1; i >= 0; i--){ const [a,b] = periodRange(ganKind,-i); rows.push({a, r:agg(a,b)}); }
   const max = Math.max(1, ...rows.map(x => Math.abs(x.r.neta)));
   const chart = `<div style="display:flex;gap:4px;align-items:flex-end;height:130px;margin-top:14px">${rows.map(x=>`<div title="${plabel(ganKind,x.a)}: ${fmt(x.r.neta)}" style="flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end"><div style="height:${Math.max(2,Math.abs(x.r.neta)/max*100)}%;background:var(${x.r.neta<0?'--bad':'--ac'});border-radius:4px 4px 0 0"></div></div>`).join('')}</div>
     <div style="display:flex;gap:4px">${rows.map(x=>`<div class="mut" style="flex:1;font-size:10px;text-align:center;overflow:hidden;white-space:nowrap">${plabel(ganKind,x.a)}</div>`).join('')}</div>`;
-  $('#app').innerHTML = `<div class="card"><h2>Ganancias</h2><div class="grid">${cards}</div>${warn}
-    <p class="mut" style="margin:12px 0 0;font-size:12px">Ganancia = ventas − costo de lo vendido − gastos. Las compras de mercadería no se restan para no contar dos veces. Las ventas anuladas no cuentan.</p></div>
+  $('#app').innerHTML = `<div class="card"><h2>Ganancias</h2><div class="grid">${cards}</div>
+    <p class="mut" style="margin:12px 0 0;font-size:12px">Ganancia = ventas − gastos (todos los egresos). Los movimientos anulados no cuentan.</p></div>
     <div class="card"><div class="row" style="margin-bottom:4px"><h2 style="margin:0;align-self:center">Evolución</h2>
     ${Object.keys(GK).map(k=>`<div class="fit"><button class="${k===ganKind?'b':'s'}" onclick="ganKind='${k}';vGan()">${{dia:'Días',semana:'Semanas',mes:'Meses',anio:'Años'}[k]}</button></div>`).join('')}</div>
     ${chart}
-    <table style="margin-top:14px"><tr><th>Período</th><th class="r">Ventas</th><th class="r hide-s">Costo</th><th class="r hide-s">Gastos</th><th class="r">Ganancia</th></tr>
-    ${rows.slice().reverse().map(x=>`<tr><td>${plabel(ganKind,x.a)}</td><td class="r">${fmt(x.r.ing)}</td><td class="r hide-s">${fmt(x.r.cmv)}</td><td class="r hide-s">${fmt(x.r.gas)}</td><td class="r ${x.r.neta<0?'out':'in'}">${fmt(x.r.neta)}</td></tr>`).join('')}</table></div>`;
+    <table style="margin-top:14px"><tr><th>Período</th><th class="r">Ventas</th><th class="r">Gastos</th><th class="r">Ganancia</th></tr>
+    ${rows.slice().reverse().map(x=>`<tr><td>${plabel(ganKind,x.a)}</td><td class="r">${fmt(x.r.ing)}</td><td class="r">${fmt(x.r.gas)}</td><td class="r ${x.r.neta<0?'out':'in'}">${fmt(x.r.neta)}</td></tr>`).join('')}</table></div>`;
 }
 
 /* ===== HISTORIAL ===== */
