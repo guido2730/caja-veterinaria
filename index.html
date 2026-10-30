@@ -195,7 +195,7 @@ const DB = {
   load(k){ try{ return JSON.parse(localStorage.getItem('caja_'+k)) || []; }catch{ return []; } },
   save(k,v){ localStorage.setItem('caja_'+k, JSON.stringify(v)); }
 };
-const S = { products: DB.load('products'), services: DB.load('services'), movements: DB.load('movements'), sessions: DB.load('sessions') };
+const S = { products: DB.load('products'), services: DB.load('services'), movements: DB.load('movements'), sessions: DB.load('sessions'), stocklog: DB.load('stocklog') };
 const persist = k => { DB.save(k, S[k]); scheduleSync(); };
 
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random()));
@@ -260,7 +260,7 @@ const SB_URL = 'https://usrbmmnnqecurmvwlodl.supabase.co';
 const SB_KEY = 'sb_publishable_K_VS1SvQAQhkPw3Ja71irQ_GwH2JoSd'; // clave pública: está pensada para ir en el código
 let sb = null;
 try{ if(window.supabase) sb = window.supabase.createClient(SB_URL, SB_KEY); }catch(e){}
-const COLS = ['products','services','movements','sessions'];
+const COLS = ['products','services','movements','sessions','stocklog'];
 let user = null, syncing = false, again = false, syncTimer = null, syncState = 'ok';
 const syncMap = k => { try{ return JSON.parse(localStorage.getItem('caja_sync_'+k)) || {}; }catch{ return {}; } };
 const saveMap = (k,m) => localStorage.setItem('caja_sync_'+k, JSON.stringify(m));
@@ -276,50 +276,59 @@ function updateBar(){
 }
 function scheduleSync(){ if(!sb || !user) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => sync(false), 1200); }
 
+// Si una tabla todavía no existe en Supabase (ej. la del historial de stock), se la saltea sin romper el resto.
+const missingTable = e => !!e && (e.code==='PGRST205' || e.code==='42P01' || /could not find the table|does not exist/i.test(e.message||''));
+async function pushOne(k){
+  const map = syncMap(k), cur = {};
+  S[k].forEach(d => cur[d.id] = JSON.stringify(d));
+  const up = S[k].filter(d => map[d.id] !== cur[d.id]);
+  const del = Object.keys(map).filter(id => !(id in cur));
+  for(const part of chunks(up, 400)){
+    const { error } = await sb.from(k).upsert(part.map(d => ({id:d.id, data:d, updated_at:new Date().toISOString()})));
+    if(error) throw error;
+    part.forEach(d => map[d.id] = cur[d.id]); saveMap(k, map);
+  }
+  for(const part of chunks(del, 200)){
+    const { error } = await sb.from(k).delete().in('id', part);
+    if(error) throw error;
+    part.forEach(id => delete map[id]); saveMap(k, map);
+  }
+}
 async function pushAll(){
   for(const k of COLS){
-    const map = syncMap(k), cur = {};
-    S[k].forEach(d => cur[d.id] = JSON.stringify(d));
-    const up = S[k].filter(d => map[d.id] !== cur[d.id]);
-    const del = Object.keys(map).filter(id => !(id in cur));
-    for(const part of chunks(up, 400)){
-      const { error } = await sb.from(k).upsert(part.map(d => ({id:d.id, data:d, updated_at:new Date().toISOString()})));
-      if(error) throw error;
-      part.forEach(d => map[d.id] = cur[d.id]); saveMap(k, map);
-    }
-    for(const part of chunks(del, 200)){
-      const { error } = await sb.from(k).delete().in('id', part);
-      if(error) throw error;
-      part.forEach(id => delete map[id]); saveMap(k, map);
-    }
+    try{ await pushOne(k); }catch(e){ if(!missingTable(e)) throw e; console.warn('Falta la tabla en Supabase:', k); }
   }
+}
+async function pullOne(k){
+  let rows = [];
+  for(let from = 0;; from += 1000){
+    const { data, error } = await sb.from(k).select('id,data').range(from, from+999);
+    if(error) throw error;
+    rows = rows.concat(data);
+    if(data.length < 1000) break;
+  }
+  const remote = {}, newMap = {}, oldMap = syncMap(k), local = {};
+  rows.forEach(r => { remote[r.id] = r.data; newMap[r.id] = JSON.stringify(r.data); });
+  S[k].forEach(d => local[d.id] = d);
+  const out = [];
+  for(const id in remote){
+    const l = local[id];
+    // si el local tiene un cambio todavía no subido, gana el local
+    if(l && oldMap[id] !== undefined && JSON.stringify(l) !== oldMap[id]) out.push(l); else out.push(remote[id]);
+  }
+  for(const id in local){
+    if(!(id in remote) && (!(id in oldMap) || JSON.stringify(local[id]) !== oldMap[id])) out.push(local[id]);
+  }
+  if(k==='movements' || k==='stocklog') out.sort((a,b) => a.ts < b.ts ? -1 : 1);
+  if(k==='sessions') out.sort((a,b) => a.openedAt < b.openedAt ? -1 : 1);
+  S[k] = out; DB.save(k, out); saveMap(k, newMap);
 }
 async function pullAll(){
   for(const k of COLS){
-    let rows = [];
-    for(let from = 0;; from += 1000){
-      const { data, error } = await sb.from(k).select('id,data').range(from, from+999);
-      if(error) throw error;
-      rows = rows.concat(data);
-      if(data.length < 1000) break;
-    }
-    const remote = {}, newMap = {}, oldMap = syncMap(k), local = {};
-    rows.forEach(r => { remote[r.id] = r.data; newMap[r.id] = JSON.stringify(r.data); });
-    S[k].forEach(d => local[d.id] = d);
-    const out = [];
-    for(const id in remote){
-      const l = local[id];
-      // si el local tiene un cambio todavía no subido, gana el local
-      if(l && oldMap[id] !== undefined && JSON.stringify(l) !== oldMap[id]) out.push(l); else out.push(remote[id]);
-    }
-    for(const id in local){
-      if(!(id in remote) && (!(id in oldMap) || JSON.stringify(local[id]) !== oldMap[id])) out.push(local[id]);
-    }
-    if(k==='movements') out.sort((a,b) => a.ts < b.ts ? -1 : 1);
-    if(k==='sessions') out.sort((a,b) => a.openedAt < b.openedAt ? -1 : 1);
-    S[k] = out; DB.save(k, out); saveMap(k, newMap);
+    try{ await pullOne(k); }catch(e){ if(!missingTable(e)) throw e; console.warn('Falta la tabla en Supabase:', k); }
   }
 }
+
 async function sync(pull){
   if(!sb || !user) return;
   if(!navigator.onLine){ setStatus('off'); return; }
@@ -411,7 +420,7 @@ function render(){
 const idbOpen = () => new Promise((res,rej) => { const r = indexedDB.open('caja_meta',1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
 const idbGet = async k => { const db = await idbOpen(); return new Promise((res,rej) => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); };
 const idbSet = async (k,v) => { const db = await idbOpen(); return new Promise((res,rej) => { const t = db.transaction('kv','readwrite'); t.objectStore('kv').put(v,k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); };
-const snapshot = () => JSON.stringify({version:1, exportedAt:new Date().toISOString(), data:{products:S.products, services:S.services, movements:S.movements, sessions:S.sessions}}, null, 1);
+const snapshot = () => JSON.stringify({version:1, exportedAt:new Date().toISOString(), data:{products:S.products, services:S.services, movements:S.movements, sessions:S.sessions, stocklog:S.stocklog}}, null, 1);
 async function backupTo(){
   const name = `respaldo-caja-${today()}.json`;
   try{
@@ -437,7 +446,7 @@ function importBackup(file){
     const d = j && j.data;
     if(!d || !Array.isArray(d.products) || !Array.isArray(d.movements) || !Array.isArray(d.sessions)){ alert('El archivo no es un respaldo de esta app.'); return; }
     if(!confirm(`Esto REEMPLAZA los datos actuales por los del respaldo (${d.products.length} productos, ${d.movements.length} movimientos). ¿Continuar?`)) return;
-    ['products','services','movements','sessions'].forEach(k => { S[k] = d[k] || []; persist(k); });
+    ['products','services','movements','sessions','stocklog'].forEach(k => { S[k] = d[k] || []; persist(k); });
     cart = []; render();
   };
   rd.readAsText(file);
@@ -574,15 +583,16 @@ function vVender(){
 function suggest(t){
   t = t.trim().toLowerCase(); const box = $('#sug');
   if(t.length<2){ box.innerHTML=''; return; }
-  const r = S.products.filter(p => p.name.toLowerCase().includes(t) || p.barcode.includes(t)).slice(0,6);
+  const r = S.products.filter(p => !p.internal && (p.name.toLowerCase().includes(t) || p.barcode.includes(t))).slice(0,6);
   box.innerHTML = r.length ? `<div class="sug">${r.map(p=>`<div onclick="addProduct('${p.id}')"><span>${esc(p.name)}</span><span class="mut">${fmt(p.price)} · stock ${p.stock}</span></div>`).join('')}</div>` : '';
 }
 function addByCode(code){
   code = String(code).trim();
   const p = S.products.find(x => x.barcode === code);
+  if(p && p.internal){ alert(p.name + ' es de uso interno y no se vende.'); return; }
   if(p) return addProduct(p.id);
   const t = code.toLowerCase();
-  const m = S.products.filter(x => x.name.toLowerCase().includes(t));
+  const m = S.products.filter(x => !x.internal && x.name.toLowerCase().includes(t));
   if(m.length===1) return addProduct(m[0].id);
   if(/^\d{6,}$/.test(code)){ if(confirm('Código '+code+' no está en stock. ¿Cargarlo ahora?')){ stockFound={code,product:null}; view='stock'; render(); newProductDlg(code); } }
   else if(!m.length) alert('No se encontró ese producto.');
@@ -651,48 +661,84 @@ function vStock(){
     <div class="row"><div><input id="sq" placeholder="Escaneá un código para consultar o sumar stock…" autocomplete="off"></div>
     <div class="fit"><button class="s" aria-label="Escanear con la cámara" onclick="cameraScan(c=>stockScan(c))"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button></div>
     <div class="fit"><button class="b" onclick="newProductDlg('')">+ Nuevo</button></div></div>
-    <label style="margin-top:10px;display:flex;gap:8px;align-items:center"><input type="checkbox" id="fast" ${fast?'checked':''}> Carga rápida: cada escaneo suma 1 unidad (si no existe, abre el alta)</label>
+    <div class="field" style="margin-top:12px"><label>Al escanear</label><select id="smode"><option value="ver"${!fast&&!useMode?' selected':''}>Consultar precio y stock</option><option value="sumar"${fast?' selected':''}>Sumar 1 unidad (si no existe, abre el alta)</option><option value="usar"${useMode?' selected':''}>Descontar 1 por uso (consultorio)</option></select></div>
     <div class="flash" id="msg"></div>
     <div id="found" style="margin-top:6px"></div></div>
     <div class="card"><div class="row" style="margin-bottom:10px"><h2 style="margin:0;align-self:center">Productos (${S.products.length})</h2><div><input id="fl" placeholder="Filtrar por nombre, código o categoría…"></div>
     <div class="fit"><button class="s" onclick="priceDlg()">% Precios</button></div>
     <div class="fit"><button class="s" onclick="$('#csvf').click()">Importar CSV</button><input type="file" id="csvf" accept=".csv,text/csv" hidden></div></div><div id="plist"></div></div>
+    <div class="card"><h2>Movimientos de stock</h2><div id="slog"></div></div>
     <div class="card"><h2>Servicios guardados</h2>
     <div class="row" style="margin-bottom:10px"><div style="flex:2"><input id="svn" placeholder="Nombre del servicio"></div><div><input id="svp" inputmode="decimal" placeholder="Precio"></div><div class="fit"><button class="s" onclick="saveService()">Guardar</button></div></div>
     <div id="svl"></div></div>`;
   const q = $('#sq');
   q.addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); const v=q.value.trim(); if(v) stockScan(v); } });
-  $('#fast').addEventListener('change', e => { fast = e.target.checked; q.focus(); });
+  $('#smode').addEventListener('change', e => { fast = e.target.value==='sumar'; useMode = e.target.value==='usar'; $('#msg').textContent=''; q.focus(); });
   $('#fl').addEventListener('input', drawList);
   $('#csvf').addEventListener('change', e => { if(e.target.files[0]) importCsv(e.target.files[0]); e.target.value=''; });
-  drawList(); drawFound(); drawServices(); q.focus();
+  drawList(); drawFound(); drawServices(); drawStockLog(); q.focus();
+}
+let useMode = false;
+function flash(text, bad){ const m = $('#msg'); if(!m) return; m.textContent = text; m.style.color = bad ? 'var(--bad)' : ''; }
+function logStock(p, qty, reason, note){
+  S.stocklog.push({id:uid(), ts:new Date().toISOString(), productId:p.id, name:p.name, qty, reason, note:note||'', by:localStorage.getItem('caja_user_email')||''});
+  persist('stocklog');
 }
 function stockScan(code){
   code = String(code).trim();
   const p = S.products.find(x => x.barcode===code);
-  const q=$('#sq'); if(q) q.value='';
-  if(fast){
-    if(p){ p.stock++; persist('products'); stockFound={code,product:p}; $('#msg').textContent = `+1 ${p.name} → stock ${p.stock}`; drawFound(); drawList(); return; }
-    stockFound={code,product:null}; $('#msg').textContent=''; drawFound(); newProductDlg(code); return;
+  const q = $('#sq'); if(q) q.value='';
+  if(useMode){
+    if(!p){ flash('Ese código no está cargado.', true); return; }
+    if(p.stock < 1){ flash(p.name + ' no tiene stock para descontar.', true); stockFound = {code, product:p}; drawFound(); return; }
+    p.stock--; persist('products'); logStock(p, -1, 'Consultorio', 'descuento rápido');
+    stockFound = {code, product:p}; flash('−1 ' + p.name + ' → stock ' + p.stock); drawFound(); drawList(); drawStockLog(); return;
   }
-  $('#msg').textContent='';
+  if(fast){
+    if(p){ p.stock++; persist('products'); logStock(p, 1, 'Ingreso', 'carga rápida'); stockFound={code,product:p}; flash('+1 ' + p.name + ' → stock ' + p.stock); drawFound(); drawList(); drawStockLog(); return; }
+    stockFound={code,product:null}; flash(''); drawFound(); newProductDlg(code); return;
+  }
+  flash('');
   stockFound = {code, product:p||null};
   drawFound();
 }
+function useDlg(id){
+  const p = S.products.find(x => x.id===id); if(!p) return;
+  modal(`<h2>Registrar uso</h2><p>${esc(p.name)} — en stock: <b>${p.stock}</b></p>
+    <div class="row field"><div><label>Unidades</label><input id="uq" inputmode="numeric" value="1"></div>
+    <div><label>Motivo</label><select id="ur"><option>Consultorio</option><option>Vencido</option><option>Roto o perdido</option><option>Otro</option></select></div></div>
+    <div class="field"><label>Nota (opcional)</label><input id="un" placeholder="Ej: vacunación de Luna"></div>
+    <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="useStock('${id}')">Descontar</button></div></div>`);
+  $('#uq').select(); $('#uq').addEventListener('keydown', e => { if(e.key==='Enter') useStock(id); });
+}
+function useStock(id){
+  const p = S.products.find(x => x.id===id); if(!p) return;
+  const qty = Math.round(num($('#uq').value));
+  if(qty < 1){ alert('Poné una cantidad de 1 o más.'); return; }
+  if(qty > p.stock){ alert('Solo hay ' + p.stock + ' en stock.'); return; }
+  p.stock -= qty; persist('products'); logStock(p, -qty, $('#ur').value, $('#un').value.trim());
+  closeModal(); stockFound = {code:p.barcode, product:p}; render(); drawFound();
+}
+function drawStockLog(){
+  const el = $('#slog'); if(!el) return;
+  const r = S.stocklog.slice(-40).reverse();
+  el.innerHTML = r.length ? `<table><tr><th>Fecha</th><th>Producto</th><th class="r">Cant.</th><th>Motivo</th></tr>${r.map(x=>`<tr><td>${fdt(x.ts)}</td><td>${esc(x.name)}${x.note?`<div class="mut" style="font-size:12px">${esc(x.note)}</div>`:''}</td><td class="r ${x.qty<0?'out':'in'}">${x.qty>0?'+':''}${x.qty}</td><td>${esc(x.reason)}</td></tr>`).join('')}</table>` : '<div class="empty">Todavía no hay movimientos de stock.</div>';
+}
+
 function drawFound(){
   const f = $('#found'); if(!f) return;
   if(!stockFound){ f.innerHTML=''; return; }
   const p = stockFound.product && S.products.find(x=>x.id===stockFound.product.id);
   if(!p){ f.innerHTML = `<div class="stat"><div class="found"><div>Código <b>${esc(stockFound.code)}</b> no está cargado.</div><button class="b" onclick="newProductDlg('${esc(stockFound.code)}')">Cargar producto</button></div></div>`; return; }
-  f.innerHTML = `<div class="stat"><div class="found"><div><b>${esc(p.name)}</b><div class="mut">Código ${esc(p.barcode)}${p.category?' · '+esc(p.category):''}</div></div>
-    <div class="p">${fmt(p.price)}</div><div>Stock: <b class="${p.stock<=0?'out':''}">${p.stock}</b></div></div>
-    <div class="row" style="margin-top:10px"><div class="fit"><button class="b" onclick="addStockDlg('${p.id}')">+ Agregar unidades</button></div><div class="fit"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></div></div></div>`;
+  f.innerHTML = `<div class="stat"><div class="found"><div><b>${esc(p.name)}</b>${p.internal?' <span class="tag">uso interno</span>':''}<div class="mut">Código ${esc(p.barcode)}${p.category?' · '+esc(p.category):''}</div></div>
+    ${p.internal?'':`<div class="p">${fmt(p.price)}</div>`}<div>Stock: <b class="${p.stock<=0?'out':''}">${p.stock}</b></div></div>
+    <div class="row" style="margin-top:10px"><div class="fit"><button class="b" onclick="addStockDlg('${p.id}')">+ Agregar unidades</button></div><div class="fit"><button class="s" onclick="useDlg('${p.id}')">Registrar uso</button></div><div class="fit"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></div></div></div>`;
 }
 const minOf = p => p.min ?? 3;
 function drawList(){
   const t = ($('#fl')||{value:''}).value.toLowerCase();
   const r = S.products.filter(p => p.name.toLowerCase().includes(t) || p.barcode.includes(t) || (p.category||'').toLowerCase().includes(t)).sort((a,b)=>a.name.localeCompare(b.name));
-  $('#plist').innerHTML = r.length ? `<table><tr><th>Producto</th><th class="hide-s">Categoría</th><th class="hide-s">Código</th><th class="r">Precio</th><th class="r">Stock</th><th></th></tr>${r.map(p=>`<tr><td>${esc(p.name)}</td><td class="hide-s mut">${esc(p.category||'')}</td><td class="hide-s mut">${esc(p.barcode)}</td><td class="r">${fmt(p.price)}</td><td class="r ${p.stock<=0?'out':p.stock<=minOf(p)?'low':''}" title="Mínimo ${minOf(p)}">${p.stock}</td><td class="r"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></td></tr>`).join('')}</table>` : '<div class="empty">Sin productos. Escaneá uno para empezar.</div>';
+  $('#plist').innerHTML = r.length ? `<table><tr><th>Producto</th><th class="hide-s">Categoría</th><th class="hide-s">Código</th><th class="r">Precio</th><th class="r">Stock</th><th></th></tr>${r.map(p=>`<tr><td>${esc(p.name)}${p.internal?' <span class="tag">uso interno</span>':''}</td><td class="hide-s mut">${esc(p.category||'')}</td><td class="hide-s mut">${esc(p.barcode)}</td><td class="r">${p.internal?'—':fmt(p.price)}</td><td class="r ${p.stock<=0?'out':p.stock<=minOf(p)?'low':''}" title="Mínimo ${minOf(p)}">${p.stock}</td><td class="r"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></td></tr>`).join('')}</table>` : '<div class="empty">Sin productos. Escaneá uno para empezar.</div>';
 }
 function addStockDlg(id){
   const p=S.products.find(x=>x.id===id);
@@ -701,14 +747,15 @@ function addStockDlg(id){
     <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="addStock('${id}')">Sumar</button></div></div>`);
   $('#au').select(); $('#au').addEventListener('keydown', e=>{ if(e.key==='Enter') addStock(id); });
 }
-function addStock(id){ const p=S.products.find(x=>x.id===id); p.stock+=Math.round(num($('#au').value)); persist('products'); closeModal(); render(); stockFound={code:p.barcode,product:p}; drawFound(); }
+function addStock(id){ const p=S.products.find(x=>x.id===id); const n=Math.round(num($('#au').value)); p.stock+=n; persist('products'); if(n) logStock(p, n, 'Ingreso', ''); closeModal(); render(); stockFound={code:p.barcode,product:p}; drawFound(); }
 function productForm(p, code){
   p = p || {name:'',barcode:code||'',price:'',cost:'',stock:1,category:'',min:3};
   return `<div class="field"><label>Código de barras</label><input id="pb" value="${esc(p.barcode)}"></div>
     <div class="field"><label>Nombre</label><input id="pn" value="${esc(p.name)}"></div>
     <div class="row field"><div><label>Precio de venta</label><input id="pp" inputmode="decimal" value="${p.price}"></div><div><label>Costo (opcional)</label><input id="pc" inputmode="decimal" value="${p.cost||''}"></div></div>
     <div class="row field"><div><label>Stock</label><input id="ps" inputmode="numeric" value="${p.stock}"></div><div><label>Stock mínimo</label><input id="pm" inputmode="numeric" value="${minOf(p)}"></div>
-    <div><label>Categoría</label><input id="pcat" list="catl" value="${esc(p.category||'')}" placeholder="Alimento, farmacia…"><datalist id="catl">${cats().map(c=>`<option value="${esc(c)}">`).join('')}</datalist></div></div>`;
+    <div><label>Categoría</label><input id="pcat" list="catl" value="${esc(p.category||'')}" placeholder="Alimento, farmacia…"><datalist id="catl">${cats().map(c=>`<option value="${esc(c)}">`).join('')}</datalist></div></div>
+    <div class="field"><label style="display:flex;gap:8px;align-items:center;font-size:14px"><input type="checkbox" id="pint" ${p.internal?'checked':''}> Uso interno: no se vende, solo se lleva la cantidad</label></div>`;
 }
 function newProductDlg(code){
   modal(`<h2>Nuevo producto</h2>${productForm(null,code)}<div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveProduct()">Guardar</button></div></div>`);
@@ -719,8 +766,8 @@ function editProductDlg(id){
   modal(`<h2>Editar producto</h2>${productForm(p)}<div class="row"><div class="fit"><button class="d" onclick="delProduct('${id}')">Eliminar</button></div><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveProduct('${id}')">Guardar</button></div></div>`);
 }
 function saveProduct(id){
-  const d = { barcode:$('#pb').value.trim(), name:$('#pn').value.trim(), price:num($('#pp').value), cost:num($('#pc').value), stock:Math.round(num($('#ps').value)), min:Math.round(num($('#pm').value)), category:$('#pcat').value.trim() };
-  if(!d.name || !d.barcode || d.price<=0){ alert('Código, nombre y precio son obligatorios.'); return; }
+  const d = { barcode:$('#pb').value.trim(), name:$('#pn').value.trim(), price:num($('#pp').value), cost:num($('#pc').value), stock:Math.round(num($('#ps').value)), min:Math.round(num($('#pm').value)), category:$('#pcat').value.trim(), internal:$('#pint').checked };
+  if(!d.name || !d.barcode || (d.price<=0 && !d.internal)){ alert(d.internal ? 'Código y nombre son obligatorios.' : 'Código, nombre y precio son obligatorios (el precio no hace falta si es de uso interno).'); return; }
   if(S.products.some(p => p.barcode===d.barcode && p.id!==id)){ alert('Ya existe un producto con ese código.'); return; }
   if(id) Object.assign(S.products.find(p=>p.id===id), d); else { const p={id:uid(),...d}; S.products.push(p); stockFound={code:d.barcode,product:p}; }
   persist('products'); closeModal(); render(); drawFound();

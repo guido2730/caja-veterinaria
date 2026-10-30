@@ -7,7 +7,7 @@
 do $$
 declare t text;
 begin
-  foreach t in array array['products','services','movements','sessions'] loop
+  foreach t in array array['products','services','movements','sessions','stocklog'] loop
     execute format('create table if not exists public.%I (
       id text primary key,
       data jsonb not null,
