@@ -220,6 +220,7 @@ let view = 'caja';
 let cart = [];
 let pay = [{method:'efectivo', amount:0}];
 let adj = 0, who = '';
+let editing = null; // venta que se está editando: {saleId, ts}
 let stockFound = null;
 let fast = false;
 
@@ -699,10 +700,27 @@ function movTable(ms){
       ? ` <button class="s chk${m.verified?' ok':''}" onclick="toggleVerified('${m.id}')">${m.verified ? '✓ Verificado' : 'Verificar'}</button>` : '';
     return `<tr><td class="${v}">${fdt(m.ts)}</td>
     <td class="${v}">${esc(m.concept)}${m.who ? ` <span class="mut">· ${esc(m.who)}</span>` : ''}${m.items && m.items.length ? `<div class="mut" style="font-size:12px">${m.items.map(i => `${i.qty}× ${esc(i.name)}`).join(', ')}</div>` : ''}
-      <div style="margin-top:6px">${m.type==='retiro' ? '<span class="tag">Retiro</span> ' : m.type==='aporte' ? '<span class="tag">Efectivo agregado</span> ' : ''}${medio}${m.voided ? '' : ver}</div></td>
+      <div style="margin-top:6px">${m.edited ? '<span class="tag">Editada</span> ' : ''}${m.type==='retiro' ? '<span class="tag">Retiro</span> ' : m.type==='aporte' ? '<span class="tag">Efectivo agregado</span> ' : ''}${medio}${m.voided ? '' : ver}</div></td>
     <td class="r ${m.voided ? 'void' : m.type==='ingreso' ? 'in' : (m.type==='retiro' || m.type==='aporte') ? 'mut' : 'out'}">${m.type==='ingreso' || m.type==='aporte' ? '+' : '−'}${fmt(m.amount)}</td>
-    <td class="r">${m.voided ? '<span class="mut">anulado</span>' : (cur && m.sessionId===cur.id ? `<button class="d" onclick="anular('${m.id}')">Anular</button>` : '')}</td></tr>`;
+    <td class="r">${m.voided ? `<span class="mut">${m.voidedByEdit ? 'reemplazada' : 'anulado'}</span>` : (cur && m.sessionId===cur.id ? `${m.saleId && m.items && m.items.length ? `<button class="s" onclick="editarVenta('${m.id}')">Editar</button> ` : ''}<button class="d" onclick="anular('${m.id}')">Anular</button>` : '')}</td></tr>`;
   }).join('')}</table>`;
+}
+// Editar una venta: se vuelve a cargar en Vender; al guardar reemplaza a la original (que queda como "reemplazada").
+function editarVenta(id){
+  const m = S.movements.find(x => x.id===id), cur = openSession();
+  if(!m || m.voided || !m.saleId) return;
+  if(!cur || m.sessionId!==cur.id){ alert('Solo se pueden editar ventas de la caja abierta.'); return; }
+  if(cart.length && !confirm('Hay una venta sin cobrar. ¿Descartarla para editar esta?')) return;
+  const group = S.movements.filter(x => x.saleId===m.saleId && !x.voided), head = group.find(x => x.items && x.items.length) || m;
+  const a = /\(([+-]?\d+(?:[.,]\d+)?)%\)/.exec(head.concept || '');
+  cart = (head.items||[]).map(i => ({productId:i.productId||null, name:i.name, price:i.price, qty:i.qty}));
+  adj = a ? num(a[1]) : 0; who = head.who || '';
+  pay = group.map(x => ({method:x.method, amount:x.amount, account:x.account||''}));
+  editing = {saleId:m.saleId, ts:head.ts};
+  view = 'vender'; render();
+}
+function cancelEdit(){
+  editing = null; cart = []; pay = [{method:'efectivo',amount:0}]; adj = 0; who = ''; render();
 }
 function anular(id){
   const m = S.movements.find(x => x.id===id); if(!m) return;
@@ -800,7 +818,7 @@ function drawCart(){
   drawCart.had = cart.length>0;
   const {sub,total} = totals();
   const rest = pay.slice(1).reduce((a,p)=>a+p.amount,0);
-  $('#cartBox').innerHTML = `<h2>Venta actual</h2>` + (cart.length ? `<div class="lines">${cart.map((l,i)=>`<div class="line"><div class="ln"><span>${esc(l.name)} ${l.productId?'':'<span class="tag">servicio</span>'}</span><span class="sub">${fmt(l.price*l.qty)}</span></div>
+  $('#cartBox').innerHTML = `<h2>${editing ? 'Editando venta' : 'Venta actual'}</h2>` + (editing ? `<div class="row" style="align-items:center;margin-bottom:10px"><div class="mut" style="font-size:13px">Hecha a las ${new Date(editing.ts).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'})}. Al guardar reemplaza a la original.</div><div class="fit"><button class="s" onclick="cancelEdit()">Cancelar edición</button></div></div>` : '') + (cart.length ? `<div class="lines">${cart.map((l,i)=>`<div class="line"><div class="ln"><span>${esc(l.name)} ${l.productId?'':'<span class="tag">servicio</span>'}</span><span class="sub">${fmt(l.price*l.qty)}</span></div>
     <div class="lc"><input inputmode="decimal" aria-label="Precio" value="${l.price}" onchange="cart[${i}].price=num(this.value);drawCart()">
     <span class="qty"><button class="i" onclick="qty(${i},-1)">−</button><b>${l.qty}</b><button class="i" onclick="qty(${i},1)">+</button></span>
     <button class="d" aria-label="Quitar" onclick="cart.splice(${i},1);drawCart()">✕</button></div></div>`).join('')}</div>
@@ -815,7 +833,7 @@ function drawCart(){
       ${i?`<div class="fit"><button class="d" onclick="pay.splice(${i},1);drawCart()">✕</button></div>`:''}</div>`).join('')}
     <button class="s" onclick="pay.push({method:'tarjeta',amount:0});drawCart()">+ Dividir pago</button></div>
     <div class="pay"><div><div class="total">${fmt(total)}</div>${adj?`<div class="mut">Subtotal ${fmt(sub)} · ajuste ${adj>0?'+':''}${adj}%</div>`:''}</div>
-    <div class="fit"><button class="b" onclick="cobrar()">Cobrar</button></div></div>` : '<div class="empty">Escaneá un producto o agregá un servicio</div>');
+    <div class="fit"><button class="b" onclick="cobrar()">${editing ? 'Guardar cambios' : 'Cobrar'}</button></div></div>` : '<div class="empty">Escaneá un producto o agregá un servicio</div>');
   if(first){ box.classList.remove('print'); void box.offsetWidth; box.classList.add('print'); }
 }
 function autoOpen(p, need, opened){
@@ -845,19 +863,28 @@ function cobrar(){
   if(first<=0){ alert('Los pagos superan el total de la venta.'); return; }
   // si falta stock de una presentación, se abre la más grande que la contiene (caja → blister → unidad)
   const snap = S.products.map(p => [p, p.stock]), opened = [];
+  // al editar, primero se devuelve el stock de la venta original
+  const old = editing ? S.movements.filter(x => x.saleId===editing.saleId && !x.voided) : [];
+  old.forEach(x => (x.items||[]).forEach(i => { const p = i.productId && S.products.find(q => q.id===i.productId); if(p) p.stock += i.qty; }));
   cart.forEach(l => { const p = l.productId && S.products.find(x => x.id===l.productId); if(p) autoOpen(p, l.qty, opened); });
   const low = cart.filter(l => l.productId && (S.products.find(p=>p.id===l.productId)||{stock:0}).stock < l.qty);
   if(low.length && !confirm('Stock insuficiente en: '+low.map(l=>l.name).join(', ')+'. ¿Cobrar igual? (el stock quedará en 0)')){ snap.forEach(([p, s]) => { p.stock = s; }); return; }
   opened.forEach(o => { logStock(o.from, -o.n, 'Apertura', 'abierta automáticamente en una venta'); logStock(o.to, o.add, 'Apertura', 'de ' + o.n + ' ' + (o.from.presentation || o.from.name) + ' (venta)'); });
   if(opened.length) toast(opened.map(o => 'Se abrió ' + o.n + ' ' + (o.from.presentation || o.from.name) + ' → +' + o.add + ' ' + (o.to.presentation || o.to.name)).join(' · '));
   cart.forEach(l => { if(l.productId){ const p=S.products.find(x=>x.id===l.productId); if(p) p.stock=Math.max(0,p.stock-l.qty); } });
-  const saleId = uid(), ts = new Date().toISOString(), sessionId = openSession().id;
+  const saleId = uid(), ts = editing ? editing.ts : new Date().toISOString(), sessionId = openSession().id;
   const concept = 'Venta' + (adj ? ` (${adj>0?'+':''}${adj}%)` : '');
   const parts = [{method:pay[0].method, amount:first, account:pay[0].account}, ...extra.map(p=>({method:p.method, amount:p.amount, account:p.account}))];
-  parts.forEach((p,i) => S.movements.push({id:uid(), ts, type:'ingreso', concept, amount:p.amount, method:p.method, account:p.method!=='efectivo' ? (p.account||defAcc()) : '', sessionId, saleId, who:who.trim(),
-    items: i===0 ? cart.map(l=>({productId:l.productId,name:l.name,price:l.price,qty:l.qty})) : []}));
+  old.forEach(x => { x.voided = true; x.voidedByEdit = true; });
+  parts.forEach((p,i) => {
+    const acc = p.method!=='efectivo' ? (p.account||defAcc()) : '';
+    const prev = old.find(o => o.verified && o.method===p.method && (o.account||'')===acc && o.amount===p.amount);
+    S.movements.push({id:uid(), ts, type:'ingreso', concept, amount:p.amount, method:p.method, account:acc, sessionId, saleId, who:who.trim(),
+      items: i===0 ? cart.map(l=>({productId:l.productId,name:l.name,price:l.price,qty:l.qty})) : [],
+      ...(editing ? {edited:true} : {}), ...(prev ? {verified:true, verifiedAt:prev.verifiedAt} : {})});
+  });
   persist('products'); persist('movements');
-  cart=[]; pay=[{method:'efectivo',amount:0}]; adj=0; who=''; render();
+  editing=null; cart=[]; pay=[{method:'efectivo',amount:0}]; adj=0; who=''; render();
 }
 
 /* ===== STOCK ===== */
