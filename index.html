@@ -226,10 +226,10 @@ let fast = false;
 const openSession = () => S.sessions.find(s => !s.closedAt);
 function summary(sess){
   const ms = S.movements.filter(m => m.sessionId === sess.id);
-  const r = { in:0, out:0, ret:0, byIn:{}, byOut:{}, ms };
+  const r = { in:0, out:0, ret:0, apo:0, byIn:{}, byOut:{}, ms };
   METHODS.forEach(x => { r.byIn[x]=0; r.byOut[x]=0; });
-  ms.forEach(m => { if(m.voided) return; if(m.type==='ingreso'){ r.in+=m.amount; r.byIn[m.method]+=m.amount; } else if(m.type==='retiro'){ r.ret+=m.amount; } else { r.out+=m.amount; r.byOut[m.method]+=m.amount; } });
-  r.expectedCash = sess.opening + r.byIn.efectivo - r.byOut.efectivo - r.ret;
+  ms.forEach(m => { if(m.voided) return; if(m.type==='ingreso'){ r.in+=m.amount; r.byIn[m.method]+=m.amount; } else if(m.type==='retiro'){ r.ret+=m.amount; } else if(m.type==='aporte'){ r.apo+=m.amount; } else { r.out+=m.amount; r.byOut[m.method]+=m.amount; } });
+  r.expectedCash = sess.opening + r.byIn.efectivo - r.byOut.efectivo - r.ret + r.apo;
   return r;
 }
 
@@ -535,8 +535,10 @@ function vCaja(){
     </div>
     <p class="mut" style="margin:12px 0 0">Ingresos: ${METHODS.map(m=>`${ML(m)} ${fmt(r.byIn[m])}`).join(' · ')}</p>
     ${r.ret ? `<p class="mut" style="margin:4px 0 0">Retiros de efectivo: ${fmt(r.ret)} (no cuentan como gasto)</p>` : ''}
+    ${r.apo ? `<p class="mut" style="margin:4px 0 0">Efectivo agregado: ${fmt(r.apo)} (no cuenta como venta)</p>` : ''}
     <div class="row" style="margin-top:14px"><div class="fit"><button class="s" onclick="egresoDlg()">− Registrar egreso</button></div>
     <div class="fit"><button class="s" onclick="ingresoDlg()">+ Ingreso manual</button></div>
+    <div class="fit"><button class="s" onclick="aporteDlg()">Agregar efectivo</button></div>
     <div class="fit"><button class="s" onclick="retiroDlg()">Retirar efectivo</button></div>
     <div class="fit"><button class="b" onclick="cerrarDlg()">Cerrar caja</button></div></div></div>
     <div class="card"><h2>Movimientos del turno</h2>${movTable(r.ms.slice().reverse())}</div>` + closedList() + cuentasCard() + backupCard();
@@ -623,6 +625,7 @@ function cerrarCaja(){
       ${METHODS.map(m=>`<tr><td>Ingresos ${ML(m)}</td><td class="r">${fmt(r.byIn[m])}</td></tr>`).join('')}
       <tr><td>Egresos (todos los medios)</td><td class="r out">${fmt(r.out)}</td></tr>
       ${r.ret ? `<tr><td>Retiros de efectivo</td><td class="r">−${fmt(r.ret)}</td></tr>` : ''}
+      ${r.apo ? `<tr><td>Efectivo agregado</td><td class="r">+${fmt(r.apo)}</td></tr>` : ''}
       ${accKeys().map(k => { const t = r.ms.filter(m => !m.voided && m.type==='ingreso' && m.account===k).reduce((a,m) => a+m.amount, 0); return t ? `<tr><td>Cobrado en ${esc(accLabel(k))}</td><td class="r">${fmt(t)}</td></tr>` : ''; }).join('')}
       ${(() => { const n = r.ms.filter(isPending).length; return n ? `<tr><td colspan="2" class="low">⚠ ${n} cobro(s) sin verificar en Mercado Pago</td></tr>` : ''; })()}
       <tr><td><b>Efectivo esperado</b></td><td class="r"><b>${fmt(s.expected)}</b></td></tr>
@@ -646,6 +649,23 @@ function retiroDlg(){
     <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveRetiro()">Retirar</button></div></div>`);
   $('#ra').focus();
   $('#ra').addEventListener('keydown', e => { if(e.key==='Enter') saveRetiro(); });
+}
+function aporteDlg(){
+  const exp = summary(openSession()).expectedCash;
+  modal(`<h2>Agregar efectivo</h2>
+    <p class="mut" style="margin-top:0">Dejás plata en la caja, por ejemplo para dar vuelto, sin que sea una venta: no suma a las ganancias ni al balance, solo al efectivo que tiene que haber en caja.</p>
+    <p>Efectivo en caja: <b>${fmt(exp)}</b></p>
+    <div class="field"><label>Monto a agregar</label><input id="aa" inputmode="decimal"></div>
+    <div class="field"><label>Motivo (opcional)</label><input id="an" placeholder="Ej: cambio para el día, billetes chicos"></div>
+    <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveAporte()">Agregar</button></div></div>`);
+  $('#aa').focus();
+  $('#aa').addEventListener('keydown', e => { if(e.key==='Enter') saveAporte(); });
+}
+function saveAporte(){
+  const amount = num($('#aa').value), note = $('#an').value.trim();
+  if(amount <= 0){ alert('Poné un monto mayor a 0.'); return; }
+  S.movements.push({id:uid(), ts:new Date().toISOString(), type:'aporte', concept: note ? 'Efectivo agregado: ' + note : 'Efectivo agregado', amount, method:'efectivo', account:'', sessionId:openSession().id, items:[]});
+  persist('movements'); closeModal(); render();
 }
 function saveRetiro(){
   const amount = num($('#ra').value), note = $('#rn').value.trim(), exp = summary(openSession()).expectedCash;
@@ -679,8 +699,8 @@ function movTable(ms){
       ? ` <button class="s chk${m.verified?' ok':''}" onclick="toggleVerified('${m.id}')">${m.verified ? '✓ Verificado' : 'Verificar'}</button>` : '';
     return `<tr><td class="${v}">${fdt(m.ts)}</td>
     <td class="${v}">${esc(m.concept)}${m.who ? ` <span class="mut">· ${esc(m.who)}</span>` : ''}${m.items && m.items.length ? `<div class="mut" style="font-size:12px">${m.items.map(i => `${i.qty}× ${esc(i.name)}`).join(', ')}</div>` : ''}
-      <div style="margin-top:6px">${m.type==='retiro' ? '<span class="tag">Retiro</span> ' : ''}${medio}${m.voided ? '' : ver}</div></td>
-    <td class="r ${m.voided ? 'void' : m.type==='ingreso' ? 'in' : m.type==='retiro' ? 'mut' : 'out'}">${m.type==='ingreso' ? '+' : '−'}${fmt(m.amount)}</td>
+      <div style="margin-top:6px">${m.type==='retiro' ? '<span class="tag">Retiro</span> ' : m.type==='aporte' ? '<span class="tag">Efectivo agregado</span> ' : ''}${medio}${m.voided ? '' : ver}</div></td>
+    <td class="r ${m.voided ? 'void' : m.type==='ingreso' ? 'in' : (m.type==='retiro' || m.type==='aporte') ? 'mut' : 'out'}">${m.type==='ingreso' || m.type==='aporte' ? '+' : '−'}${fmt(m.amount)}</td>
     <td class="r">${m.voided ? '<span class="mut">anulado</span>' : (cur && m.sessionId===cur.id ? `<button class="d" onclick="anular('${m.id}')">Anular</button>` : '')}</td></tr>`;
   }).join('')}</table>`;
 }
@@ -1025,7 +1045,7 @@ function agg(a, b){
   S.movements.forEach(m => {
     if(m.voided) return;
     const t = new Date(m.ts); if(t < a || t >= b) return;
-    if(m.type==='retiro') return;
+    if(m.type==='retiro' || m.type==='aporte') return;
     if(m.type==='ingreso') r.ing += m.amount; else r.gas += m.amount;
   });
   r.neta = r.ing - r.gas;
@@ -1083,6 +1103,7 @@ function vHist(){
     <div class="grid" style="margin-top:12px"><div class="stat"><small>Ingresos</small><b class="in">${fmt(inn)}</b></div><div class="stat"><small>Egresos</small><b class="out">${fmt(out)}</b></div><div class="stat"><small>Saldo</small><b>${fmt(inn-out)}</b></div></div>
     <p class="mut" style="margin:10px 0 0">Ingresos por medio: ${byM}</p>
     ${(() => { const t = live.filter(m => m.type==='retiro').reduce((a,m) => a+m.amount, 0); return t ? `<p class="mut" style="margin:4px 0 0">Retiros de efectivo: ${fmt(t)} (no cuentan como gasto)</p>` : ''; })()}
+    ${(() => { const t = live.filter(m => m.type==='aporte').reduce((a,m) => a+m.amount, 0); return t ? `<p class="mut" style="margin:4px 0 0">Efectivo agregado: ${fmt(t)} (no cuenta como venta)</p>` : ''; })()}
     <p class="mut" style="margin:4px 0 0">Cobros por cuenta, día: ${accs}</p>
     <p class="mut" style="margin:4px 0 0">Cobros por cuenta, mes: ${monthAccs}</p>
     <label style="display:flex;gap:8px;align-items:center;margin-top:14px;font-size:14px;color:var(--tx)"><input type="checkbox" id="hp" ${histPending?'checked':''}> Ver solo cobros sin verificar, de todos los días${pendAll ? ' (' + pendAll + ' pendientes)' : ''}</label></div>
