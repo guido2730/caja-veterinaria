@@ -569,15 +569,25 @@ function vVender(){
     <div id="sug"></div></div>
     <div class="card"><h2>Servicios</h2>
     ${S.services.length?`<div class="chips">${S.services.map(s=>`<button class="s" onclick="addSaved('${s.id}')">${esc(s.name)} · ${fmt(s.price)}</button>`).join('')}</div>`:''}
-    <div class="row"><div style="flex:2"><label>Servicio manual</label><input id="sn" placeholder="Consulta, vacuna, baño…"></div>
+    <div class="row"><div style="flex:2"><label>Buscar o escribir servicio</label><input id="sn" placeholder="Consulta, vacuna, baño…"></div>
     <div><label>Precio</label><input id="sp" inputmode="decimal"></div>
     <div class="fit"><label style="margin:0 0 8px"><input type="checkbox" id="ssv"> guardar</label></div>
-    <div class="fit"><button class="s" onclick="addService()">Agregar</button></div></div></div>
+    <div class="fit"><button class="s" onclick="addService()">Agregar</button></div></div>
+    <div id="ssug"></div></div>
     </div><div class="ticket" id="cartBox"></div></div>`;
   const q = $('#q');
   q.addEventListener('input', () => suggest(q.value));
   q.addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); const v=q.value.trim(); if(v) addByCode(v); } });
   $('#sp').addEventListener('keydown', e => { if(e.key==='Enter') addService(); });
+  $('#sn').addEventListener('input', () => suggestServices($('#sn').value));
+  $('#sn').addEventListener('keydown', e => {
+    if(e.key!=='Enter') return;
+    e.preventDefault();
+    const t = $('#sn').value.trim().toLowerCase(); if(!t) return;
+    const m = S.services.filter(s => s.name.toLowerCase().includes(t));
+    const hit = m.find(s => s.name.toLowerCase()===t) || (m.length===1 ? m[0] : null);
+    if(hit && !num($('#sp').value)) pickService(hit.id); else $('#sp').focus();
+  });
   drawCart(); q.focus();
 }
 function suggest(t){
@@ -604,6 +614,12 @@ function addProduct(id){
   const q = $('#q'); if(q){ q.value=''; $('#sug').innerHTML=''; q.focus(); }
   drawCart();
 }
+function suggestServices(t){
+  t = t.trim().toLowerCase(); const box = $('#ssug'); if(!box) return;
+  const r = t ? S.services.filter(s => s.name.toLowerCase().includes(t)).slice(0,6) : [];
+  box.innerHTML = r.length ? `<div class="sug">${r.map(s=>`<div onclick="pickService('${s.id}')"><span>${esc(s.name)}</span><span class="mut">${fmt(s.price)}</span></div>`).join('')}</div>` : '';
+}
+function pickService(id){ addSaved(id); const n = $('#sn'); if(n){ n.value=''; $('#ssug').innerHTML=''; n.focus(); } }
 function addSaved(id){ const s = S.services.find(x=>x.id===id); if(s){ cart.push({productId:null, name:s.name, price:s.price, qty:1}); drawCart(); } }
 function addService(){
   const name = $('#sn').value.trim(), price = num($('#sp').value);
@@ -669,12 +685,13 @@ function vStock(){
     <div class="fit"><button class="s" onclick="$('#csvf').click()">Importar CSV</button><input type="file" id="csvf" accept=".csv,text/csv" hidden></div></div><div id="plist"></div></div>
     <div class="card"><h2>Movimientos de stock</h2><div id="slog"></div></div>
     <div class="card"><h2>Servicios guardados</h2>
-    <div class="row" style="margin-bottom:10px"><div style="flex:2"><input id="svn" placeholder="Nombre del servicio"></div><div><input id="svp" inputmode="decimal" placeholder="Precio"></div><div class="fit"><button class="s" onclick="saveService()">Guardar</button></div></div>
+    <div class="row" style="margin-bottom:10px"><div style="flex:2"><input id="svn" placeholder="Buscar o crear servicio"></div><div><input id="svp" inputmode="decimal" placeholder="Precio"></div><div class="fit"><button class="s" onclick="saveService()">Guardar</button></div></div>
     <div id="svl"></div></div>`;
   const q = $('#sq');
   q.addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); const v=q.value.trim(); if(v) stockScan(v); } });
   $('#smode').addEventListener('change', e => { fast = e.target.value==='sumar'; useMode = e.target.value==='usar'; $('#msg').textContent=''; q.focus(); });
   $('#fl').addEventListener('input', drawList);
+  $('#svn').addEventListener('input', drawServices);
   $('#csvf').addEventListener('change', e => { if(e.target.files[0]) importCsv(e.target.files[0]); e.target.value=''; });
   drawList(); drawFound(); drawServices(); drawStockLog(); q.focus();
 }
@@ -823,7 +840,8 @@ function importCsv(file){
 }
 
 function drawServices(){
-  $('#svl').innerHTML = S.services.length ? `<table>${S.services.map(s=>`<tr><td>${esc(s.name)}</td><td class="r">${fmt(s.price)}</td><td class="r" style="white-space:nowrap"><button class="s" onclick="editServiceDlg('${s.id}')">Editar</button> <button class="d" aria-label="Eliminar" onclick="delService('${s.id}')">✕</button></td></tr>`).join('')}</table>` : '<div class="empty">Sin servicios guardados</div>';
+  const q = (($('#svn')||{}).value||'').trim().toLowerCase(), list = S.services.filter(s => !q || s.name.toLowerCase().includes(q));
+  $('#svl').innerHTML = list.length ? `<table>${list.map(s=>`<tr><td>${esc(s.name)}</td><td class="r">${fmt(s.price)}</td><td class="r" style="white-space:nowrap"><button class="s" onclick="editServiceDlg('${s.id}')">Editar</button> <button class="d" aria-label="Eliminar" onclick="delService('${s.id}')">✕</button></td></tr>`).join('')}</table>` : '<div class="empty">' + (S.services.length ? 'Ningún servicio coincide.' : 'Sin servicios guardados') + '</div>';
 }
 function saveService(){
   const name = $('#svn').value.trim(), price = num($('#svp').value);
