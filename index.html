@@ -987,9 +987,9 @@ function addStockDlg(id){
     <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="addStock('${id}')">Sumar</button></div></div>`);
   $('#au').select(); $('#au').addEventListener('keydown', e=>{ if(e.key==='Enter') addStock(id); }); $('#ac').addEventListener('keydown', e=>{ if(e.key==='Enter') addStock(id); });
 }
-// el precio de venta es el de compra por MARKUP, redondeado a múltiplos de $10 (igual que Ajustar precios)
+// el precio de venta es el de compra por MARKUP, redondeado a múltiplos de $500 (mínimo $500)
 const MARKUP = 2.2;
-const salePrice = cost => Math.round(cost * MARKUP / 10) * 10;
+const salePrice = cost => Math.max(500, Math.round(cost * MARKUP / 500) * 500);
 function buyHint(internal, current){
   const el = $('#ach'); if(!el || internal) return;
   const c = num($('#ac').value);
