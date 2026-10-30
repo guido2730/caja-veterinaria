@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Vettcash</title>
+<script>try{var t=localStorage.getItem('caja_theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600;700&display=swap">
@@ -19,7 +20,10 @@
   --disp:'Bricolage Grotesque','Instrument Sans',system-ui,sans-serif;
   --body:'Instrument Sans',system-ui,-apple-system,'Segoe UI',sans-serif;
 }
-@media (prefers-color-scheme:dark){:root{--bg:#0D1120;--card:#151B30;--tx:#E9ECF5;--mut:#9AA3BA;--bd:#262D45;--bd2:#3A4466;--ac:#93A3FF;--ac2:#1F2750;--onac:#0D1120;--ok:#3DD68C;--bad:#FF7B7B;--warn:#F2A03D}}
+:root{color-scheme:light dark}
+:root[data-theme=light]{color-scheme:light}
+:root[data-theme=dark]{color-scheme:dark;--bg:#0D1120;--card:#151B30;--tx:#E9ECF5;--mut:#9AA3BA;--bd:#262D45;--bd2:#3A4466;--ac:#93A3FF;--ac2:#1F2750;--onac:#0D1120;--ok:#3DD68C;--bad:#FF7B7B;--warn:#F2A03D}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0D1120;--card:#151B30;--tx:#E9ECF5;--mut:#9AA3BA;--bd:#262D45;--bd2:#3A4466;--ac:#93A3FF;--ac2:#1F2750;--onac:#0D1120;--ok:#3DD68C;--bad:#FF7B7B;--warn:#F2A03D}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 var(--body);font-variant-numeric:tabular-nums}
 button{font-family:var(--body)}
@@ -138,6 +142,8 @@ td.r,th.r{text-align:right}
 #q{min-height:54px;font-size:17px;border-width:2px;border-color:var(--ac)}
 .ico{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linejoin:round;vertical-align:middle}
 .seg{display:flex;gap:6px}.seg .fit{flex:1}.seg button{width:100%;min-height:40px;padding:0 6px}
+.themebtn{flex:none;width:40px;height:40px;display:grid;place-items:center;border:0;border-radius:10px;background:none;color:var(--mut);cursor:pointer}
+.themebtn:hover{color:var(--tx);background:var(--ac2)}
 /* diálogos y cámara */
 dialog{border:1px solid var(--bd);border-radius:18px;background:var(--card);color:var(--tx);padding:24px;width:min(460px,calc(100vw - 24px));max-height:92vh;overflow:auto}
 dialog::backdrop{background:rgba(13,17,32,.55)}
@@ -175,6 +181,7 @@ details{margin-bottom:12px}summary{cursor:pointer;color:var(--ac);font-weight:65
     <button data-v="hist"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg><span>Historial</span></button>
   </nav>
   <span id="stat" class="mut"></span>
+  <button id="themeBtn" class="themebtn" onclick="cycleTheme()"></button>
 </div></header>
 <main id="app"></main>
 <dialog id="dlg"></dialog>
@@ -356,6 +363,7 @@ async function logout(){
   user = null; localStorage.removeItem('caja_user_email'); render();
 }
 async function boot(){
+  applyTheme();
   await refreshUser();
   if(sb){
     sb.auth.onAuthStateChange((ev, s) => { user = s ? s.user : null; });
@@ -365,6 +373,27 @@ async function boot(){
   }
   render();
   if(user) sync(true);
+}
+
+/* ===== Tema: automático (sigue al celu), claro u oscuro ===== */
+const THEME_ICONS = {
+  auto:  '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg>',
+  light: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4L7 17M17 7l1.4-1.4"/></svg>',
+  dark:  '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>'
+};
+const THEME_NAMES = {auto:'automático', light:'claro', dark:'oscuro'};
+const getTheme = () => { try{ const t = localStorage.getItem('caja_theme'); return t==='light'||t==='dark' ? t : 'auto'; }catch{ return 'auto'; } };
+function applyTheme(){
+  const t = getTheme();
+  if(t==='auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.dataset.theme = t;
+  const b = $('#themeBtn'); if(!b) return;
+  b.innerHTML = THEME_ICONS[t]; b.title = 'Tema: ' + THEME_NAMES[t];
+  b.setAttribute('aria-label', 'Tema: ' + THEME_NAMES[t] + '. Tocá para cambiar');
+}
+function cycleTheme(){
+  const next = {auto:'light', light:'dark', dark:'auto'}[getTheme()];
+  try{ if(next==='auto') localStorage.removeItem('caja_theme'); else localStorage.setItem('caja_theme', next); }catch(e){}
+  applyTheme();
 }
 
 /* ===== Navegación ===== */
