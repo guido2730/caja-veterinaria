@@ -468,25 +468,44 @@ function backupCard(){
    Cada cobro guarda la cuenta ('a' o 'b') y si ya se verificó contra la app de Mercado Pago. */
 const DEFAULT_SET = {id:'main', accounts:['MP Nadia','MP Guido'], defaultAcc:'a', usdType:'oficial', usdRate:0};
 const getSet = () => Object.assign({}, DEFAULT_SET, S.settings[0] || {});
-const accLabel = k => { const a = getSet().accounts; return (k==='b' ? a[1] : a[0]) || (k==='b' ? 'MP Guido' : 'MP Nadia'); };
-const defAcc = () => getSet().defaultAcc==='b' ? 'b' : 'a';
-const aopts = sel => ['a','b'].map(k => `<option value="${k}"${k===sel?' selected':''}>${esc(accLabel(k))}</option>`).join('');
+const accKey = i => String.fromCharCode(97 + i);
+const accKeys = () => getSet().accounts.map((_, i) => accKey(i));
+const accLabel = k => { const i = k.charCodeAt(0) - 97; return getSet().accounts[i] || ('Cuenta ' + (i + 1)); };
+const defAcc = () => { const s = getSet(); return accKeys().includes(s.defaultAcc) ? s.defaultAcc : 'a'; };
+const aopts = sel => accKeys().map(k => `<option value="${k}"${k===sel?' selected':''}>${esc(accLabel(k))}</option>`).join('');
 function saveSettings(patch){
   const nxt = Object.assign({}, getSet(), patch);
   if(S.settings.length) S.settings[0] = nxt; else S.settings.push(nxt);
   persist('settings');
 }
 function saveAccName(i, v){
-  const a = getSet().accounts.slice(); a[i] = v.trim() || (i ? 'MP Guido' : 'MP Nadia');
+  const a = getSet().accounts.slice(); a[i] = v.trim() || (i===0 ? 'MP Nadia' : i===1 ? 'MP Guido' : 'Cuenta ' + (i + 1));
   saveSettings({accounts:a}); render();
 }
 function cuentasCard(){
   const s = getSet();
   return `<div class="card"><h2>Cuentas de cobro</h2>
     <p class="mut" style="margin-top:0">Para tarjeta (Point), transferencia y QR elegís en qué cuenta de Mercado Pago entró cada cobro.</p>
-    <div class="row"><div><label>Cuenta 1</label><input value="${esc(s.accounts[0])}" onchange="saveAccName(0,this.value)"></div>
-    <div><label>Cuenta 2</label><input value="${esc(s.accounts[1])}" onchange="saveAccName(1,this.value)"></div></div>
+    <div class="row">${s.accounts.map((n, i) => `<div><label>Cuenta ${i + 1}</label><input class="accin" value="${esc(n)}" onchange="saveAccName(${i},this.value)"></div>`).join('')}</div>
+    <div class="row" style="margin-top:12px"><div class="fit"><button class="s" onclick="addAccount()">+ Agregar cuenta</button></div>${s.accounts.length > 1 ? '<div class="fit"><button class="d" onclick="removeAccount()">Quitar la última</button></div>' : ''}</div>
     <div class="field" style="margin-top:12px"><label>Cuenta que se propone al cobrar</label><select onchange="saveSettings({defaultAcc:this.value});render()">${aopts(defAcc())}</select></div></div>`;
+}
+function addAccount(){
+  const a = getSet().accounts.slice();
+  if(a.length >= 10){ alert('Podés tener hasta 10 cuentas.'); return; }
+  a.push('Cuenta ' + (a.length + 1));
+  saveSettings({accounts:a}); render();
+  const inputs = document.querySelectorAll('.accin'); const last = inputs[inputs.length - 1];
+  if(last){ last.scrollIntoView({block:'center'}); last.focus(); last.select(); }
+}
+function removeAccount(){
+  const s = getSet(), a = s.accounts.slice();
+  if(a.length <= 1) return;
+  const key = accKey(a.length - 1);
+  if(S.movements.some(m => m.account === key)){ alert('"' + accLabel(key) + '" tiene cobros registrados y no se puede quitar.'); return; }
+  if(!confirm('¿Quitar "' + a[a.length - 1] + '"?')) return;
+  a.pop();
+  saveSettings({accounts:a, defaultAcc: s.defaultAcc===key ? 'a' : s.defaultAcc}); render();
 }
 const isPending = m => m.type==='ingreso' && m.method!=='efectivo' && !m.verified && !m.voided;
 function toggleVerified(id){
@@ -601,7 +620,7 @@ function cerrarCaja(){
       <tr><td>Efectivo inicial</td><td class="r">${fmt(s.opening)}</td></tr>
       ${METHODS.map(m=>`<tr><td>Ingresos ${ML(m)}</td><td class="r">${fmt(r.byIn[m])}</td></tr>`).join('')}
       <tr><td>Egresos (todos los medios)</td><td class="r out">${fmt(r.out)}</td></tr>
-      ${['a','b'].map(k => { const t = r.ms.filter(m => !m.voided && m.type==='ingreso' && m.account===k).reduce((a,m) => a+m.amount, 0); return t ? `<tr><td>Cobrado en ${esc(accLabel(k))}</td><td class="r">${fmt(t)}</td></tr>` : ''; }).join('')}
+      ${accKeys().map(k => { const t = r.ms.filter(m => !m.voided && m.type==='ingreso' && m.account===k).reduce((a,m) => a+m.amount, 0); return t ? `<tr><td>Cobrado en ${esc(accLabel(k))}</td><td class="r">${fmt(t)}</td></tr>` : ''; }).join('')}
       ${(() => { const n = r.ms.filter(isPending).length; return n ? `<tr><td colspan="2" class="low">⚠ ${n} cobro(s) sin verificar en Mercado Pago</td></tr>` : ''; })()}
       <tr><td><b>Efectivo esperado</b></td><td class="r"><b>${fmt(s.expected)}</b></td></tr>
       <tr><td><b>Efectivo contado</b></td><td class="r"><b>${fmt(s.counted)}</b></td></tr>
@@ -1029,13 +1048,13 @@ function vHist(){
   const live = dayMs.filter(m => !m.voided);
   const inn = live.filter(m=>m.type==='ingreso').reduce((a,m)=>a+m.amount,0), out = live.filter(m=>m.type==='egreso').reduce((a,m)=>a+m.amount,0);
   const byM = METHODS.map(x => `${ML(x)} ${fmt(live.filter(m=>m.type==='ingreso'&&m.method===x).reduce((a,m)=>a+m.amount,0))}`).join(' · ');
-  const accs = ['a','b'].map(k => {
+  const accs = accKeys().map(k => {
     const l = live.filter(m => m.type==='ingreso' && m.account===k);
     const pend = l.filter(m => !m.verified).length;
     return `${esc(accLabel(k))} ${fmt(l.reduce((a,m)=>a+m.amount,0))}${pend ? ` (${pend} sin verificar)` : ''}`;
   }).join(' · ');
   const [ma, mb] = periodRange('mes', 0);
-  const monthAccs = ['a','b'].map(k => `${esc(accLabel(k))} ${fmt(S.movements.filter(m => !m.voided && m.type==='ingreso' && m.account===k && new Date(m.ts)>=ma && new Date(m.ts)<mb).reduce((a,m)=>a+m.amount,0))}`).join(' · ');
+  const monthAccs = accKeys().map(k => `${esc(accLabel(k))} ${fmt(S.movements.filter(m => !m.voided && m.type==='ingreso' && m.account===k && new Date(m.ts)>=ma && new Date(m.ts)<mb).reduce((a,m)=>a+m.amount,0))}`).join(' · ');
   const pendAll = S.movements.filter(isPending).length;
   $('#app').innerHTML = `<div class="card"><div class="row"><div><label>Día</label><input type="date" id="hd" value="${histDay}"></div>
     <div class="fit"><button class="s" onclick="exportCsv()">Exportar CSV (todo)</button></div></div>
