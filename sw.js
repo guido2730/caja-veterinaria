@@ -1,7 +1,7 @@
 // Primero red (para recibir actualizaciones) y, si no hay internet, lo guardado.
 // Solo se cachean los archivos de la app y la librería de acceso; las llamadas a la base nunca.
-const CACHE = 'caja-v4';
-const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable.png', './logo.svg'];
+const CACHE = 'caja-v5';
+const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable.png', './logo-cash.svg'];
 const CDN = ['cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', e => {
