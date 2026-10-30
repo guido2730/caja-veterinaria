@@ -74,9 +74,11 @@ details{margin-bottom:12px}summary{cursor:pointer;color:var(--ac);font-weight:60
     <button data-v="stock">Stock</button>
     <button data-v="hist">Historial</button>
   </nav>
+  <span id="stat" class="mut" style="font-size:13px"></span>
 </div></header>
 <main id="app"></main>
 <dialog id="dlg"></dialog>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.js"></script>
 
 <script>
 /* ===== Capa de datos =====
@@ -87,7 +89,7 @@ const DB = {
   save(k,v){ localStorage.setItem('caja_'+k, JSON.stringify(v)); }
 };
 const S = { products: DB.load('products'), services: DB.load('services'), movements: DB.load('movements'), sessions: DB.load('sessions') };
-const persist = k => DB.save(k, S[k]);
+const persist = k => { DB.save(k, S[k]); scheduleSync(); };
 
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random()));
 const $ = s => document.querySelector(s);
@@ -143,10 +145,134 @@ async function cameraScan(onCode){
   loop();
 }
 
+/* ===== Sincronización con Supabase =====
+   Local primero: la app siempre lee y escribe en localStorage. Cada cambio se sube en segundo plano
+   y, al abrir o volver a tener internet, se baja lo que cargaron otros dispositivos.
+   Antes de usarla hay que correr supabase/schema.sql y crear el usuario en Authentication. */
+const SB_URL = 'https://usrbmmnnqecurmvwlodl.supabase.co';
+const SB_KEY = 'sb_publishable_K_VS1SvQAQhkPw3Ja71irQ_GwH2JoSd'; // clave pública: está pensada para ir en el código
+let sb = null;
+try{ if(window.supabase) sb = window.supabase.createClient(SB_URL, SB_KEY); }catch(e){}
+const COLS = ['products','services','movements','sessions'];
+let user = null, syncing = false, again = false, syncTimer = null, syncState = 'ok';
+const syncMap = k => { try{ return JSON.parse(localStorage.getItem('caja_sync_'+k)) || {}; }catch{ return {}; } };
+const saveMap = (k,m) => localStorage.setItem('caja_sync_'+k, JSON.stringify(m));
+const chunks = (a,n) => { const o=[]; for(let i=0;i<a.length;i+=n) o.push(a.slice(i,i+n)); return o; };
+const hasAccess = () => !sb ? !!localStorage.getItem('caja_user_email') : (!!user || (!navigator.onLine && !!localStorage.getItem('caja_user_email')));
+
+function setStatus(s){ syncState = s; updateBar(); }
+function updateBar(){
+  const el = $('#stat'); if(!el) return;
+  if(!sb || !hasAccess()){ el.textContent = ''; return; }
+  const st = {ok:'☁ sincronizado', sync:'☁ sincronizando…', err:'⚠ error al sincronizar', off:'☁ sin conexión'}[syncState] || '';
+  el.innerHTML = `${st} · <a href="#" onclick="logout();return false" style="color:inherit">Salir</a>`;
+}
+function scheduleSync(){ if(!sb || !user) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => sync(false), 1200); }
+
+async function pushAll(){
+  for(const k of COLS){
+    const map = syncMap(k), cur = {};
+    S[k].forEach(d => cur[d.id] = JSON.stringify(d));
+    const up = S[k].filter(d => map[d.id] !== cur[d.id]);
+    const del = Object.keys(map).filter(id => !(id in cur));
+    for(const part of chunks(up, 400)){
+      const { error } = await sb.from(k).upsert(part.map(d => ({id:d.id, data:d, updated_at:new Date().toISOString()})));
+      if(error) throw error;
+      part.forEach(d => map[d.id] = cur[d.id]); saveMap(k, map);
+    }
+    for(const part of chunks(del, 200)){
+      const { error } = await sb.from(k).delete().in('id', part);
+      if(error) throw error;
+      part.forEach(id => delete map[id]); saveMap(k, map);
+    }
+  }
+}
+async function pullAll(){
+  for(const k of COLS){
+    let rows = [];
+    for(let from = 0;; from += 1000){
+      const { data, error } = await sb.from(k).select('id,data').range(from, from+999);
+      if(error) throw error;
+      rows = rows.concat(data);
+      if(data.length < 1000) break;
+    }
+    const remote = {}, newMap = {}, oldMap = syncMap(k), local = {};
+    rows.forEach(r => { remote[r.id] = r.data; newMap[r.id] = JSON.stringify(r.data); });
+    S[k].forEach(d => local[d.id] = d);
+    const out = [];
+    for(const id in remote){
+      const l = local[id];
+      // si el local tiene un cambio todavía no subido, gana el local
+      if(l && oldMap[id] !== undefined && JSON.stringify(l) !== oldMap[id]) out.push(l); else out.push(remote[id]);
+    }
+    for(const id in local){
+      if(!(id in remote) && (!(id in oldMap) || JSON.stringify(local[id]) !== oldMap[id])) out.push(local[id]);
+    }
+    if(k==='movements') out.sort((a,b) => a.ts < b.ts ? -1 : 1);
+    if(k==='sessions') out.sort((a,b) => a.openedAt < b.openedAt ? -1 : 1);
+    S[k] = out; DB.save(k, out); saveMap(k, newMap);
+  }
+}
+async function sync(pull){
+  if(!sb || !user) return;
+  if(!navigator.onLine){ setStatus('off'); return; }
+  if(syncing){ again = true; return; }
+  syncing = true; setStatus('sync');
+  const before = pull ? JSON.stringify(COLS.map(k => S[k])) : null;
+  try{
+    await pushAll();
+    if(pull) await pullAll();
+    setStatus('ok');
+    if(pull && JSON.stringify(COLS.map(k => S[k])) !== before && !dlg.open) render();
+  }catch(e){ console.error(e); setStatus('err'); }
+  syncing = false;
+  if(again){ again = false; scheduleSync(); }
+}
+
+async function refreshUser(){
+  if(!sb) return;
+  try{ const { data } = await sb.auth.getSession(); user = data.session ? data.session.user : null; if(user) localStorage.setItem('caja_user_email', user.email); }catch(e){}
+}
+function vLogin(){
+  $('#app').innerHTML = `<div class="card" style="max-width:380px;margin:30px auto"><h2>Ingresar</h2>
+    ${sb ? '' : '<p class="out">No se pudo cargar el acceso. Conectate a internet para iniciar sesión la primera vez.</p>'}
+    <div class="field"><label>Email</label><input id="le" type="email" autocomplete="username"></div>
+    <div class="field"><label>Contraseña</label><input id="lp" type="password" autocomplete="current-password"></div>
+    <div id="lerr" class="out field"></div>
+    <button class="b" style="width:100%" onclick="login()">Entrar</button></div>`;
+  $('#lp').addEventListener('keydown', e => { if(e.key==='Enter') login(); });
+}
+async function login(){
+  if(!sb) return;
+  if(!navigator.onLine){ $('#lerr').textContent = 'Sin internet: conectate para ingresar.'; return; }
+  const { data, error } = await sb.auth.signInWithPassword({email:$('#le').value.trim(), password:$('#lp').value});
+  if(error){ $('#lerr').textContent = 'Email o contraseña incorrectos.'; return; }
+  user = data.user; localStorage.setItem('caja_user_email', user.email);
+  render(); sync(true);
+}
+async function logout(){
+  if(user && !confirm('Si cerrás sesión con cambios sin subir, se suben al volver a entrar. ¿Salir?')) return;
+  try{ if(sb) await sb.auth.signOut(); }catch(e){}
+  user = null; localStorage.removeItem('caja_user_email'); render();
+}
+async function boot(){
+  await refreshUser();
+  if(sb){
+    sb.auth.onAuthStateChange((ev, s) => { user = s ? s.user : null; });
+    window.addEventListener('online', async () => { await refreshUser(); if(user) sync(true); else render(); });
+    window.addEventListener('offline', () => setStatus('off'));
+    document.addEventListener('visibilitychange', () => { if(!document.hidden && user) sync(true); });
+  }
+  render();
+  if(user) sync(true);
+}
+
 /* ===== Navegación ===== */
 $('#nav').addEventListener('click', e => { const b = e.target.closest('button'); if(b){ view = b.dataset.v; render(); } });
 function render(){
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
+  updateBar();
+  if(!hasAccess()){ vLogin(); return; }
   ({caja:vCaja, vender:vVender, stock:vStock, hist:vHist})[view]();
 }
 
@@ -551,7 +677,7 @@ function exportCsv(){
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿'+rows.join('\n')],{type:'text/csv'})); a.download = 'movimientos-caja.csv'; a.click();
 }
 
-render();
+boot();
 if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>
 </body>
