@@ -817,6 +817,24 @@ function drawCart(){
     <div class="fit"><button class="b" onclick="cobrar()">Cobrar</button></div></div>` : '<div class="empty">Escaneá un producto o agregá un servicio</div>');
   if(first){ box.classList.remove('print'); void box.offsetWidth; box.classList.add('print'); }
 }
+function autoOpen(p, need, opened){
+  if(p.stock >= need) return;
+  const parent = S.products.find(x => x.contains && x.contains.to===p.id);
+  if(!parent) return;
+  const per = parent.contains.qty, boxes = Math.ceil((need - p.stock) / per);
+  autoOpen(parent, boxes, opened);
+  const n = Math.min(boxes, parent.stock);
+  if(n < 1) return;
+  parent.stock -= n; p.stock += n * per;
+  opened.push({from:parent, to:p, n, add:n * per});
+}
+function toast(text){
+  const t = document.createElement('div');
+  t.textContent = text;
+  t.setAttribute('role', 'status');
+  t.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:84px;max-width:min(92vw,460px);background:var(--tx);color:var(--bg);padding:10px 14px;border-radius:12px;font-size:14px;z-index:99;box-shadow:0 6px 24px rgba(0,0,0,.3)';
+  document.body.appendChild(t); setTimeout(() => t.remove(), 5000);
+}
 function qty(i,d){ cart[i].qty+=d; if(cart[i].qty<1) cart.splice(i,1); drawCart(); }
 function cobrar(){
   if(!cart.length) return;
@@ -824,8 +842,13 @@ function cobrar(){
   const extra = pay.slice(1).filter(p => p.amount>0);
   const first = r2(total - extra.reduce((a,p)=>a+p.amount,0));
   if(first<=0){ alert('Los pagos superan el total de la venta.'); return; }
+  // si falta stock de una presentación, se abre la más grande que la contiene (caja → blister → unidad)
+  const snap = S.products.map(p => [p, p.stock]), opened = [];
+  cart.forEach(l => { const p = l.productId && S.products.find(x => x.id===l.productId); if(p) autoOpen(p, l.qty, opened); });
   const low = cart.filter(l => l.productId && (S.products.find(p=>p.id===l.productId)||{stock:0}).stock < l.qty);
-  if(low.length && !confirm('Stock insuficiente en: '+low.map(l=>l.name).join(', ')+'. ¿Cobrar igual? (el stock quedará en 0)')) return;
+  if(low.length && !confirm('Stock insuficiente en: '+low.map(l=>l.name).join(', ')+'. ¿Cobrar igual? (el stock quedará en 0)')){ snap.forEach(([p, s]) => { p.stock = s; }); return; }
+  opened.forEach(o => { logStock(o.from, -o.n, 'Apertura', 'abierta automáticamente en una venta'); logStock(o.to, o.add, 'Apertura', 'de ' + o.n + ' ' + (o.from.presentation || o.from.name) + ' (venta)'); });
+  if(opened.length) toast(opened.map(o => 'Se abrió ' + o.n + ' ' + (o.from.presentation || o.from.name) + ' → +' + o.add + ' ' + (o.to.presentation || o.to.name)).join(' · '));
   cart.forEach(l => { if(l.productId){ const p=S.products.find(x=>x.id===l.productId); if(p) p.stock=Math.max(0,p.stock-l.qty); } });
   const saleId = uid(), ts = new Date().toISOString(), sessionId = openSession().id;
   const concept = 'Venta' + (adj ? ` (${adj>0?'+':''}${adj}%)` : '');
