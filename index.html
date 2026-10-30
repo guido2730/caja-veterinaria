@@ -744,17 +744,28 @@ function vVender(){
   });
   drawCart(); q.focus();
 }
+const pname = p => p.presentation ? p.name + ' · ' + p.presentation : p.name;
+const presKey = (b, pr) => String(b).trim() + '|' + String(pr||'').trim().toLowerCase();
+let pickCb = null;
+function pickPres(list, title, cb){
+  pickCb = cb;
+  modal(`<h2>${esc(title)}</h2><p class="mut" style="margin-top:0">Este código tiene más de una presentación. Elegí cuál.</p>
+    ${list.map(p => `<button class="s" style="width:100%;margin-bottom:8px;text-align:left;display:flex;justify-content:space-between;gap:10px" onclick="pickDone('${p.id}')"><span>${esc(pname(p))}</span><span class="mut">${p.internal ? 'uso interno' : fmt(p.price)} · stock ${p.stock}</span></button>`).join('')}
+    <button class="s" style="width:100%" onclick="closeModal()">Cancelar</button>`);
+}
+function pickDone(id){ const cb = pickCb; pickCb = null; closeModal(); if(cb) cb(S.products.find(p => p.id===id)); }
 function suggest(t){
   t = t.trim().toLowerCase(); const box = $('#sug');
   if(t.length<2){ box.innerHTML=''; return; }
   const r = S.products.filter(p => !p.internal && (p.name.toLowerCase().includes(t) || p.barcode.includes(t))).slice(0,6);
-  box.innerHTML = r.length ? `<div class="sug">${r.map(p=>`<div onclick="addProduct('${p.id}')"><span>${esc(p.name)}</span><span class="mut">${fmt(p.price)} · stock ${p.stock}</span></div>`).join('')}</div>` : '';
+  box.innerHTML = r.length ? `<div class="sug">${r.map(p=>`<div onclick="addProduct('${p.id}')"><span>${esc(pname(p))}</span><span class="mut">${fmt(p.price)} · stock ${p.stock}</span></div>`).join('')}</div>` : '';
 }
 function addByCode(code){
   code = String(code).trim();
-  const p = S.products.find(x => x.barcode === code);
-  if(p && p.internal){ alert(p.name + ' es de uso interno y no se vende.'); return; }
-  if(p) return addProduct(p.id);
+  const same = S.products.filter(x => x.barcode === code), sale = same.filter(x => !x.internal);
+  if(same.length && !sale.length){ alert(same[0].name + ' es de uso interno y no se vende.'); return; }
+  if(sale.length > 1) return pickPres(sale, 'Elegí la presentación', p => addProduct(p.id));
+  if(sale.length) return addProduct(sale[0].id);
   const t = code.toLowerCase();
   const m = S.products.filter(x => !x.internal && x.name.toLowerCase().includes(t));
   if(m.length===1) return addProduct(m[0].id);
@@ -764,7 +775,7 @@ function addByCode(code){
 function addProduct(id){
   const p = S.products.find(x => x.id===id); if(!p) return;
   const l = cart.find(x => x.productId===id);
-  if(l) l.qty++; else cart.push({productId:id, name:p.name, price:p.price, qty:1});
+  if(l) l.qty++; else cart.push({productId:id, name:pname(p), price:p.price, qty:1});
   const q = $('#q'); if(q){ q.value=''; $('#sug').innerHTML=''; q.focus(); }
   drawCart();
 }
@@ -853,30 +864,38 @@ function vStock(){
 let useMode = false;
 function flash(text, bad){ const m = $('#msg'); if(!m) return; m.textContent = text; m.style.color = bad ? 'var(--bad)' : ''; }
 function logStock(p, qty, reason, note){
-  S.stocklog.push({id:uid(), ts:new Date().toISOString(), productId:p.id, name:p.name, qty, reason, note:note||'', by:localStorage.getItem('caja_user_email')||''});
+  S.stocklog.push({id:uid(), ts:new Date().toISOString(), productId:p.id, name:pname(p), qty, reason, note:note||'', by:localStorage.getItem('caja_user_email')||''});
   persist('stocklog');
 }
 function stockScan(code){
   code = String(code).trim();
-  const p = S.products.find(x => x.barcode===code);
+  const same = S.products.filter(x => x.barcode===code);
   const q = $('#sq'); if(q) q.value='';
+  const quick = (fn) => same.length > 1 ? pickPres(same, 'Elegí la presentación', fn) : fn(same[0]);
   if(useMode){
-    if(!p){ flash('Ese código no está cargado.', true); return; }
-    if(p.stock < 1){ flash(p.name + ' no tiene stock para descontar.', true); stockFound = {code, product:p}; drawFound(); return; }
-    p.stock--; persist('products'); logStock(p, -1, 'Consultorio', 'descuento rápido');
-    stockFound = {code, product:p}; flash('−1 ' + p.name + ' → stock ' + p.stock); drawFound(); drawList(); drawStockLog(); return;
+    if(!same.length){ flash('Ese código no está cargado.', true); return; }
+    quick(p => {
+      stockFound = {code, product:p};
+      if(p.stock < 1){ flash(pname(p) + ' no tiene stock para descontar.', true); drawFound(); return; }
+      p.stock--; persist('products'); logStock(p, -1, 'Consultorio', 'descuento rápido');
+      flash('−1 ' + pname(p) + ' → stock ' + p.stock); drawFound(); drawList(); drawStockLog();
+    });
+    return;
   }
   if(fast){
-    if(p){ p.stock++; persist('products'); logStock(p, 1, 'Ingreso', 'carga rápida'); stockFound={code,product:p}; flash('+1 ' + p.name + ' → stock ' + p.stock); drawFound(); drawList(); drawStockLog(); return; }
+    if(same.length){
+      quick(p => { p.stock++; persist('products'); logStock(p, 1, 'Ingreso', 'carga rápida'); stockFound={code,product:p}; flash('+1 ' + pname(p) + ' → stock ' + p.stock); drawFound(); drawList(); drawStockLog(); });
+      return;
+    }
     stockFound={code,product:null}; flash(''); drawFound(); newProductDlg(code); return;
   }
   flash('');
-  stockFound = {code, product:p||null};
+  stockFound = {code, product:same[0]||null};
   drawFound();
 }
 function useDlg(id){
   const p = S.products.find(x => x.id===id); if(!p) return;
-  modal(`<h2>Registrar uso</h2><p>${esc(p.name)} — en stock: <b>${p.stock}</b></p>
+  modal(`<h2>Registrar uso</h2><p>${esc(pname(p))} — en stock: <b>${p.stock}</b></p>
     <div class="row field"><div><label>Unidades</label><input id="uq" inputmode="numeric" value="1"></div>
     <div><label>Motivo</label><select id="ur"><option>Consultorio</option><option>Vencido</option><option>Roto o perdido</option><option>Otro</option></select></div></div>
     <div class="field"><label>Nota (opcional)</label><input id="un" placeholder="Ej: vacunación de Luna"></div>
@@ -900,37 +919,43 @@ function drawStockLog(){
 function drawFound(){
   const f = $('#found'); if(!f) return;
   if(!stockFound){ f.innerHTML=''; return; }
-  const p = stockFound.product && S.products.find(x=>x.id===stockFound.product.id);
-  if(!p){ f.innerHTML = `<div class="stat"><div class="found"><div>Código <b>${esc(stockFound.code)}</b> no está cargado.</div><button class="b" onclick="newProductDlg('${esc(stockFound.code)}')">Cargar producto</button></div></div>`; return; }
-  f.innerHTML = `<div class="stat"><div class="found"><div><b>${esc(p.name)}</b>${p.internal?' <span class="tag">uso interno</span>':''}<div class="mut">Código ${esc(p.barcode)}${p.category?' · '+esc(p.category):''}</div></div>
+  const code = stockFound.code || (stockFound.product && stockFound.product.barcode) || '';
+  const list = S.products.filter(x => x.barcode===code).sort((x, y) => (x.presentation||'').localeCompare(y.presentation||''));
+  if(!list.length){ f.innerHTML = `<div class="stat"><div class="found"><div>Código <b>${esc(code)}</b> no está cargado.</div><button class="b" onclick="newProductDlg('${esc(code)}')">Cargar producto</button></div></div>`; return; }
+  f.innerHTML = list.map(p => `<div class="stat"><div class="found"><div><b>${esc(p.name)}</b>${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}<div class="mut">Código ${esc(p.barcode)}${p.category?' · '+esc(p.category):''}</div></div>
     ${p.internal?'':`<div class="p">${fmt(p.price)}</div>`}<div>Stock: <b class="${p.stock<=0?'out':''}">${p.stock}</b></div></div>
-    <div class="row" style="margin-top:10px"><div class="fit"><button class="b" onclick="addStockDlg('${p.id}')">+ Agregar unidades</button></div><div class="fit"><button class="s" onclick="useDlg('${p.id}')">Registrar uso</button></div><div class="fit"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></div></div></div>`;
+    <div class="row" style="margin-top:10px"><div class="fit"><button class="b" onclick="addStockDlg('${p.id}')">+ Agregar unidades</button></div><div class="fit"><button class="s" onclick="useDlg('${p.id}')">Registrar uso</button></div><div class="fit"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></div></div></div>`).join('') +
+    `<div style="margin-top:8px"><button class="s" onclick="newProductDlg('${esc(code)}')">+ Otra presentación de este código</button></div>`;
 }
 const minOf = p => p.min ?? 3;
 function drawList(){
   const t = ($('#fl')||{value:''}).value.toLowerCase();
   const r = S.products.filter(p => p.name.toLowerCase().includes(t) || p.barcode.includes(t) || (p.category||'').toLowerCase().includes(t)).sort((a,b)=>a.name.localeCompare(b.name));
-  $('#plist').innerHTML = r.length ? `<table><tr><th>Producto</th><th class="hide-s">Categoría</th><th class="hide-s">Código</th><th class="r">Precio</th><th class="r">Stock</th><th></th></tr>${r.map(p=>`<tr><td>${esc(p.name)}${p.internal?' <span class="tag">uso interno</span>':''}</td><td class="hide-s mut">${esc(p.category||'')}</td><td class="hide-s mut">${esc(p.barcode)}</td><td class="r">${p.internal?'—':fmt(p.price)}</td><td class="r ${p.stock<=0?'out':p.stock<=minOf(p)?'low':''}" title="Mínimo ${minOf(p)}">${p.stock}</td><td class="r"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></td></tr>`).join('')}</table>` : '<div class="empty">Sin productos. Escaneá uno para empezar.</div>';
+  $('#plist').innerHTML = r.length ? `<table><tr><th>Producto</th><th class="hide-s">Categoría</th><th class="hide-s">Código</th><th class="r">Precio</th><th class="r">Stock</th><th></th></tr>${r.map(p=>`<tr><td>${esc(p.name)}${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}</td><td class="hide-s mut">${esc(p.category||'')}</td><td class="hide-s mut">${esc(p.barcode)}</td><td class="r">${p.internal?'—':fmt(p.price)}</td><td class="r ${p.stock<=0?'out':p.stock<=minOf(p)?'low':''}" title="Mínimo ${minOf(p)}">${p.stock}</td><td class="r"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></td></tr>`).join('')}</table>` : '<div class="empty">Sin productos. Escaneá uno para empezar.</div>';
 }
 function addStockDlg(id){
   const p=S.products.find(x=>x.id===id);
-  modal(`<h2>Agregar stock</h2><p>${esc(p.name)} — actual: <b>${p.stock}</b></p>
+  modal(`<h2>Agregar stock</h2><p>${esc(pname(p))} — actual: <b>${p.stock}</b></p>
     <div class="field"><label>Unidades a sumar</label><input id="au" inputmode="numeric" value="1"></div>
     <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="addStock('${id}')">Sumar</button></div></div>`);
   $('#au').select(); $('#au').addEventListener('keydown', e=>{ if(e.key==='Enter') addStock(id); });
 }
 function addStock(id){ const p=S.products.find(x=>x.id===id); const n=Math.round(num($('#au').value)); p.stock+=n; persist('products'); if(n) logStock(p, n, 'Ingreso', ''); closeModal(); render(); stockFound={code:p.barcode,product:p}; drawFound(); }
 function productForm(p, code){
-  p = p || {name:'',barcode:code||'',price:'',cost:'',stock:1,category:'',min:3};
+  p = p || {name:'',barcode:code||'',presentation:'',price:'',cost:'',stock:1,category:'',min:3};
   return `<div class="field"><label>Código de barras</label><input id="pb" value="${esc(p.barcode)}"></div>
     <div class="field"><label>Nombre</label><input id="pn" value="${esc(p.name)}"></div>
+    <div class="field"><label>Presentación (opcional)</label><input id="ppr" list="presl" value="${esc(p.presentation||'')}" placeholder="Caja, Blister, Unidad…"><datalist id="presl"><option value="Caja"><option value="Blister"><option value="Unidad"><option value="Frasco"></datalist>
+      <div class="mut" style="font-size:12px;margin-top:4px">Si se vende de más de una forma con el mismo código, cargá cada una con su presentación, precio y stock.</div></div>
     <div class="row field"><div><label>Precio de venta</label><input id="pp" inputmode="decimal" value="${p.price}"></div><div><label>Costo (opcional)</label><input id="pc" inputmode="decimal" value="${p.cost||''}"></div></div>
     <div class="row field"><div><label>Stock</label><input id="ps" inputmode="numeric" value="${p.stock}"></div><div><label>Stock mínimo</label><input id="pm" inputmode="numeric" value="${minOf(p)}"></div>
     <div><label>Categoría</label><input id="pcat" list="catl" value="${esc(p.category||'')}" placeholder="Alimento, farmacia…"><datalist id="catl">${cats().map(c=>`<option value="${esc(c)}">`).join('')}</datalist></div></div>
     <div class="field"><label style="display:flex;gap:8px;align-items:center;font-size:14px"><input type="checkbox" id="pint" ${p.internal?'checked':''}> Uso interno: no se vende, solo se lleva la cantidad</label></div>`;
 }
 function newProductDlg(code){
-  modal(`<h2>Nuevo producto</h2>${productForm(null,code)}<div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveProduct()">Guardar</button></div></div>`);
+  const ex = code ? S.products.filter(x => x.barcode===code) : [];
+  const prefill = ex[0] ? {...ex[0], id:undefined, presentation:'', price:'', stock:1, internal:false} : null;
+  modal(`<h2>${ex.length ? 'Nueva presentación' : 'Nuevo producto'}</h2>${ex.length ? `<p class="mut" style="margin-top:0">Ya existe <b>${esc(ex.map(pname).join(', '))}</b> con este código. Cargá la otra forma de venta con su presentación, precio y stock.</p>` : ''}${productForm(prefill,code)}<div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveProduct()">Guardar</button></div></div>`);
   (code ? $('#pn') : $('#pb')).focus();
 }
 function editProductDlg(id){
@@ -938,9 +963,12 @@ function editProductDlg(id){
   modal(`<h2>Editar producto</h2>${productForm(p)}<div class="row"><div class="fit"><button class="d" onclick="delProduct('${id}')">Eliminar</button></div><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveProduct('${id}')">Guardar</button></div></div>`);
 }
 function saveProduct(id){
-  const d = { barcode:$('#pb').value.trim(), name:$('#pn').value.trim(), price:num($('#pp').value), cost:num($('#pc').value), stock:Math.round(num($('#ps').value)), min:Math.round(num($('#pm').value)), category:$('#pcat').value.trim(), internal:$('#pint').checked };
+  const d = { barcode:$('#pb').value.trim(), name:$('#pn').value.trim(), presentation:$('#ppr').value.trim(), price:num($('#pp').value), cost:num($('#pc').value), stock:Math.round(num($('#ps').value)), min:Math.round(num($('#pm').value)), category:$('#pcat').value.trim(), internal:$('#pint').checked };
   if(!d.name || !d.barcode || (d.price<=0 && !d.internal)){ alert(d.internal ? 'Código y nombre son obligatorios.' : 'Código, nombre y precio son obligatorios (el precio no hace falta si es de uso interno).'); return; }
-  if(S.products.some(p => p.barcode===d.barcode && p.id!==id)){ alert('Ya existe un producto con ese código.'); return; }
+  const dup = S.products.find(p => p.id!==id && presKey(p.barcode, p.presentation)===presKey(d.barcode, d.presentation));
+  if(dup){ alert(d.presentation ? 'Ya existe "' + pname(dup) + '" con ese código y esa presentación.' : 'Ya existe "' + dup.name + '" con ese código. Si es otra forma de venta, poné la presentación (Caja, Blister…).'); return; }
+  const others = S.products.filter(p => p.id!==id && p.barcode===d.barcode);
+  if(!id && others.length && !confirm('Ya existe "' + pname(others[0]) + '" con ese código.\n\n¿Agregar "' + pname(d) + '" como otra presentación / forma de venta?')) return;
   if(id) Object.assign(S.products.find(p=>p.id===id), d); else { const p={id:uid(),...d}; S.products.push(p); stockFound={code:d.barcode,product:p}; }
   persist('products'); closeModal(); render(); drawFound();
   if(fast && !id) $('#msg').textContent = 'Producto cargado: '+d.name;
@@ -974,18 +1002,19 @@ function importCsv(file){
     const parse = l => { const out=[]; let cur='', q=false; for(const c of l){ if(c==='"') q=!q; else if(c===sep && !q){ out.push(cur); cur=''; } else cur+=c; } out.push(cur); return out.map(x=>x.trim()); };
     const head = parse(lines[0]).map(h => h.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,''));
     const ix = n => head.indexOf(n);
-    const iC=ix('codigo'), iN=ix('nombre'), iP=ix('precio'), iCo=ix('costo'), iS=ix('stock'), iCat=ix('categoria'), iM=ix('minimo');
-    if(iC<0 || iN<0 || iP<0){ alert('Faltan columnas. Necesito al menos: codigo, nombre, precio. Opcionales: costo, stock, categoria, minimo.'); return; }
+    const iC=ix('codigo'), iN=ix('nombre'), iP=ix('precio'), iCo=ix('costo'), iS=ix('stock'), iCat=ix('categoria'), iM=ix('minimo'), iPr=ix('presentacion');
+    if(iC<0 || iN<0 || iP<0){ alert('Faltan columnas. Necesito al menos: codigo, nombre, precio. Opcionales: costo, stock, categoria, minimo, presentacion.'); return; }
     let nuevos=0, act=0, skip=0;
     lines.slice(1).forEach(l => {
       const c = parse(l), barcode = c[iC], name = c[iN], price = num(c[iP]);
       if(!barcode || !name || price<=0){ skip++; return; }
       const d = { barcode, name, price };
+      if(iPr>=0) d.presentation = c[iPr] || '';
       if(iCo>=0) d.cost = num(c[iCo]);
       if(iS>=0) d.stock = Math.round(num(c[iS]));
       if(iCat>=0) d.category = c[iCat];
       if(iM>=0 && c[iM]) d.min = Math.round(num(c[iM]));
-      const ex = S.products.find(p => p.barcode===barcode);
+      const ex = S.products.find(p => presKey(p.barcode, p.presentation)===presKey(barcode, d.presentation));
       if(ex){ Object.assign(ex, d); act++; } else { S.products.push({id:uid(), cost:0, stock:0, min:3, category:'', ...d}); nuevos++; }
     });
     persist('products'); render();
