@@ -902,6 +902,26 @@ function useDlg(id){
     <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="useStock('${id}')">Descontar</button></div></div>`);
   $('#uq').select(); $('#uq').addEventListener('keydown', e => { if(e.key==='Enter') useStock(id); });
 }
+function openDlg(id){
+  const p = S.products.find(x => x.id===id), t = p && p.contains && S.products.find(x => x.id===p.contains.to); if(!t) return;
+  const lbl = x => x.presentation || x.name;
+  modal(`<h2>Abrir ${esc(lbl(p))}</h2>
+    <p>Cada ${esc(lbl(p))} trae <b>${p.contains.qty}</b> ${esc(lbl(t))}. Se resta de ${esc(lbl(p))} (en stock: <b>${p.stock}</b>) y se suma a ${esc(lbl(t))} (en stock: <b>${t.stock}</b>).</p>
+    <div class="field"><label>Cuántas abrís</label><input id="oq" inputmode="numeric" value="1"></div>
+    <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="doOpen('${id}')">Abrir</button></div></div>`);
+  $('#oq').select(); $('#oq').addEventListener('keydown', e => { if(e.key==='Enter') doOpen(id); });
+}
+function doOpen(id){
+  const p = S.products.find(x => x.id===id), t = p && p.contains && S.products.find(x => x.id===p.contains.to); if(!t) return;
+  const n = Math.round(num($('#oq').value));
+  if(n < 1){ alert('Poné una cantidad de 1 o más.'); return; }
+  if(n > p.stock){ alert('Solo hay ' + p.stock + ' en stock.'); return; }
+  const add = n * p.contains.qty;
+  p.stock -= n; t.stock += add; persist('products');
+  logStock(p, -n, 'Apertura', 'abiertas para sacar ' + add + ' ' + (t.presentation || t.name));
+  logStock(t, add, 'Apertura', 'de ' + n + ' ' + (p.presentation || p.name));
+  closeModal(); stockFound = {code:p.barcode, product:p}; render(); drawFound();
+}
 function useStock(id){
   const p = S.products.find(x => x.id===id); if(!p) return;
   const qty = Math.round(num($('#uq').value));
@@ -924,7 +944,7 @@ function drawFound(){
   if(!list.length){ f.innerHTML = `<div class="stat"><div class="found"><div>Código <b>${esc(code)}</b> no está cargado.</div><button class="b" onclick="newProductDlg('${esc(code)}')">Cargar producto</button></div></div>`; return; }
   f.innerHTML = list.map(p => `<div class="stat"><div class="found"><div><b>${esc(p.name)}</b>${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}<div class="mut">Código ${esc(p.barcode)}${p.category?' · '+esc(p.category):''}</div></div>
     ${p.internal?'':`<div class="p">${fmt(p.price)}</div>`}<div>Stock: <b class="${p.stock<=0?'out':''}">${p.stock}</b></div></div>
-    <div class="row" style="margin-top:10px"><div class="fit"><button class="b" onclick="addStockDlg('${p.id}')">+ Agregar unidades</button></div><div class="fit"><button class="s" onclick="useDlg('${p.id}')">Registrar uso</button></div><div class="fit"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></div></div></div>`).join('') +
+    <div class="row" style="margin-top:10px"><div class="fit"><button class="b" onclick="addStockDlg('${p.id}')">+ Agregar unidades</button></div><div class="fit"><button class="s" onclick="useDlg('${p.id}')">Registrar uso</button></div>${p.contains && S.products.some(x => x.id===p.contains.to) ? `<div class="fit"><button class="s" onclick="openDlg('${p.id}')">Abrir</button></div>` : ''}<div class="fit"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></div></div></div>`).join('') +
     `<div style="margin-top:8px"><button class="s" onclick="newProductDlg('${esc(code)}')">+ Otra presentación de este código</button></div>`;
 }
 const minOf = p => p.min ?? 3;
@@ -947,6 +967,12 @@ function productForm(p, code){
     <div class="field"><label>Nombre</label><input id="pn" value="${esc(p.name)}"></div>
     <div class="field"><label>Presentación (opcional)</label><input id="ppr" list="presl" value="${esc(p.presentation||'')}" placeholder="Caja, Blister, Unidad…"><datalist id="presl"><option value="Caja"><option value="Blister"><option value="Unidad"><option value="Frasco"></datalist>
       <div class="mut" style="font-size:12px;margin-top:4px">Si se vende de más de una forma con el mismo código, cargá cada una con su presentación, precio y stock.</div></div>
+    ${(() => {
+      const sib = S.products.filter(x => x.barcode===p.barcode && x.id!==p.id);
+      if(!sib.length) return '<div class="mut field" style="font-size:12px">Si esta presentación se abre para sacar otras más chicas (caja → blisters o unidades), cargá primero la más chica y después editá esta para indicar cuántas trae.</div>';
+      const c = p.contains || {};
+      return `<div class="field"><label>Al abrirla, trae (opcional)</label><div class="row"><div><input id="pcq" inputmode="numeric" value="${c.qty||''}" placeholder="Ej: 3"></div><div><select id="pct"><option value="">—</option>${sib.map(x => `<option value="${x.id}"${c.to===x.id?' selected':''}>${esc(x.presentation||x.name)}</option>`).join('')}</select></div></div></div>`;
+    })()}
     <div class="row field"><div><label>Precio de venta</label><input id="pp" inputmode="decimal" value="${p.price}"></div><div><label>Costo (opcional)</label><input id="pc" inputmode="decimal" value="${p.cost||''}"></div></div>
     <div class="row field"><div><label>Stock</label><input id="ps" inputmode="numeric" value="${p.stock}"></div><div><label>Stock mínimo</label><input id="pm" inputmode="numeric" value="${minOf(p)}"></div>
     <div><label>Categoría</label><input id="pcat" list="catl" value="${esc(p.category||'')}" placeholder="Alimento, farmacia…"><datalist id="catl">${cats().map(c=>`<option value="${esc(c)}">`).join('')}</datalist></div></div>
@@ -964,6 +990,7 @@ function editProductDlg(id){
 }
 function saveProduct(id){
   const d = { barcode:$('#pb').value.trim(), name:$('#pn').value.trim(), presentation:$('#ppr').value.trim(), price:num($('#pp').value), cost:num($('#pc').value), stock:Math.round(num($('#ps').value)), min:Math.round(num($('#pm').value)), category:$('#pcat').value.trim(), internal:$('#pint').checked };
+  { const cq = Math.round(num($('#pcq') ? $('#pcq').value : 0)), ct = $('#pct') ? $('#pct').value : ''; d.contains = cq > 0 && ct && ct !== id ? {to:ct, qty:cq} : null; }
   if(!d.name || !d.barcode || (d.price<=0 && !d.internal)){ alert(d.internal ? 'Código y nombre son obligatorios.' : 'Código, nombre y precio son obligatorios (el precio no hace falta si es de uso interno).'); return; }
   const dup = S.products.find(p => p.id!==id && presKey(p.barcode, p.presentation)===presKey(d.barcode, d.presentation));
   if(dup){ alert(d.presentation ? 'Ya existe "' + pname(dup) + '" con ese código y esa presentación.' : 'Ya existe "' + dup.name + '" con ese código. Si es otra forma de venta, poné la presentación (Caja, Blister…).'); return; }
