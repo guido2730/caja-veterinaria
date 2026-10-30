@@ -466,7 +466,7 @@ function backupCard(){
 /* ===== CUENTAS DE COBRO =====
    Tarjeta (Point), transferencia y QR entran a una de dos cuentas de Mercado Pago.
    Cada cobro guarda la cuenta ('a' o 'b') y si ya se verificó contra la app de Mercado Pago. */
-const DEFAULT_SET = {id:'main', accounts:['MP Nadia','MP Guido'], defaultAcc:'a'};
+const DEFAULT_SET = {id:'main', accounts:['MP Nadia','MP Guido'], defaultAcc:'a', usdType:'oficial', usdRate:0};
 const getSet = () => Object.assign({}, DEFAULT_SET, S.settings[0] || {});
 const accLabel = k => { const a = getSet().accounts; return (k==='b' ? a[1] : a[0]) || (k==='b' ? 'MP Guido' : 'MP Nadia'); };
 const defAcc = () => getSet().defaultAcc==='b' ? 'b' : 'a';
@@ -523,7 +523,7 @@ function vCaja(){
 function closedList(){
   const c = S.sessions.filter(x=>x.closedAt).slice(-5).reverse();
   if(!c.length) return '';
-  return `<div class="card"><h2>Últimos cierres</h2><table><tr><th>Cierre</th><th class="r">Esperado</th><th class="r">Contado</th><th class="r">Diferencia</th><th class="hide-s">Nota</th></tr>${c.map(x=>{const d=x.counted-x.expected;return `<tr><td>${fdt(x.closedAt)}</td><td class="r">${fmt(x.expected)}</td><td class="r">${fmt(x.counted)}</td><td class="r ${d<0?'out':d>0?'in':''}">${fmt(d)}</td><td class="hide-s mut">${esc(x.note||'')}</td></tr>`}).join('')}</table></div>`;
+  return `<div class="card"><h2>Últimos cierres</h2><table><tr><th>Cierre</th><th class="r">Esperado</th><th class="r">Contado</th><th class="r">Diferencia</th><th class="r hide-s">Balance</th><th class="hide-s">Nota</th></tr>${c.map(x=>{const d=x.counted-x.expected;return `<tr><td>${fdt(x.closedAt)}</td><td class="r">${fmt(x.expected)}</td><td class="r">${fmt(x.counted)}</td><td class="r ${d<0?'out':d>0?'in':''}">${fmt(d)}</td><td class="r hide-s">${x.balance!==undefined ? fmt(x.balance) + (x.usdRate ? `<div class="mut" style="font-size:12px">${fmtUsd(x.balance / x.usdRate)}</div>` : '') : ''}</td><td class="hide-s mut">${esc(x.note||'')}</td></tr>`}).join('')}</table></div>`;
 }
 function openCaja(){ S.sessions.push({id:uid(), openedAt:new Date().toISOString(), opening:num($('#op').value)}); persist('sessions'); render(); }
 
@@ -533,10 +533,54 @@ function cerrarDlg(){
     <details><summary>Contar billetes</summary><div class="bills">${DEN.map(d=>`<div><span>${fmt(d).replace(',00','')}</span><input class="bill" type="number" min="0" inputmode="numeric" placeholder="0" data-d="${d}" oninput="sumBills()"></div>`).join('')}</div></details>
     <div class="field"><label>Efectivo contado</label><input id="cnt" inputmode="decimal" value="${r.expectedCash}" oninput="diffInfo()"></div>
     <div id="dinfo" class="mut field"></div>
+    <div class="field"><label>Cotización del dólar (pesos por dólar)</label>
+      <div class="row"><div><select id="usdt" onchange="fetchUsd()">${[['oficial','Oficial'],['blue','Blue'],['bolsa','MEP']].map(([v,l]) => `<option value="${v}"${getSet().usdType===v?' selected':''}>${l}</option>`).join('')}</select></div>
+      <div><input id="usdr" inputmode="decimal" value="${getSet().usdRate||''}" placeholder="Ej: 1500" oninput="usdInfo()"></div>
+      <div class="fit"><button class="s" onclick="fetchUsd()">Actualizar</button></div></div>
+      <div id="usdmsg" class="mut" style="font-size:12px;margin-top:4px"></div>
+      <div id="usdinfo" style="margin-top:6px"></div></div>
     <div class="field"><label>Nota (obligatoria si hay diferencia)</label><input id="cnote" placeholder="Ej: faltó vuelto, retiro del dueño…"></div>
     <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="cerrarCaja()">Confirmar cierre</button></div></div>`);
-  diffInfo();
+  diffInfo(); usdInfo(); if(navigator.onLine) fetchUsd(true);
 }
+/* Balance del día en dólares: la cotización se trae de dolarapi.com (precio de venta) o se escribe a mano. */
+const fmtUsd = n => new Intl.NumberFormat('es-AR',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2}).format(n||0);
+function usdInfo(){
+  const el = $('#usdinfo'); if(!el) return;
+  const s = openSession(); if(!s) return;
+  const r = summary(s), bal = r.in - r.out, rate = num($('#usdr') ? $('#usdr').value : 0);
+  el.innerHTML = rate > 0 ? `Balance del día ${fmt(bal)} ≈ <b>${fmtUsd(bal/rate)}</b>` : `Balance del día ${fmt(bal)}. Poné la cotización para verlo en dólares.`;
+}
+async function fetchUsd(auto){
+  const t = $('#usdt'); if(!t) return;
+  const msg = txt => { const m = $('#usdmsg'); if(m) m.textContent = txt; };
+  msg('Consultando…');
+  try{
+    const res = await fetch('https://dolarapi.com/v1/dolares/' + t.value);
+    if(!res.ok) throw new Error('http ' + res.status);
+    const d = await res.json();
+    if(!(d.venta > 0)) throw new Error('sin dato');
+    if(!$('#usdr')) return;
+    $('#usdr').value = d.venta;
+    msg('Dólar ' + t.options[t.selectedIndex].text + ' (venta), actualizado ' + new Date(d.fechaActualizacion).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}));
+    usdInfo();
+  }catch(e){
+    msg(auto ? 'No se pudo traer la cotización. Podés escribirla a mano.' : 'Sin conexión o servicio no disponible. Escribila a mano.');
+  }
+}
+// Cotización guardada en los ajustes: la usan las tarjetas de Ganancias (hoy, semana, mes y año).
+async function refreshRate(){
+  if(!navigator.onLine) return;
+  try{
+    const res = await fetch('https://dolarapi.com/v1/dolares/' + getSet().usdType);
+    if(!res.ok) return;
+    const d = await res.json();
+    if(!(d.venta > 0) || d.venta === getSet().usdRate) return;
+    saveSettings({usdRate:d.venta});
+    if(view==='gan') vGan();
+  }catch(e){}
+}
+function setUsdType(t){ saveSettings({usdType:t}); vGan(); }
 function sumBills(){ let t=0; document.querySelectorAll('.bill').forEach(i=>{ t += (parseInt(i.value)||0)*parseInt(i.dataset.d); }); $('#cnt').value = t; diffInfo(); }
 function diffInfo(){
   const d = r2(num($('#cnt').value) - summary(openSession()).expectedCash);
@@ -547,6 +591,9 @@ function cerrarCaja(){
   const counted = num($('#cnt').value), diff = r2(counted - r.expectedCash), note = $('#cnote').value.trim();
   if(diff!==0 && !note){ alert('Hay una diferencia de '+fmt(diff)+'. Escribí una nota para explicarla.'); return; }
   s.closedAt = new Date().toISOString(); s.expected = r.expectedCash; s.counted = counted; s.note = note;
+  const rate = num($('#usdr') ? $('#usdr').value : 0);
+  s.balance = r.in - r.out;
+  if(rate > 0){ s.usdRate = rate; s.usdType = $('#usdt').value; saveSettings({usdRate:rate, usdType:s.usdType}); }
   persist('sessions');
   modal(`<h2>Cierre de caja</h2>
     <p class="mut">${fdt(s.openedAt)} → ${fdt(s.closedAt)}</p>
@@ -559,6 +606,8 @@ function cerrarCaja(){
       <tr><td><b>Efectivo esperado</b></td><td class="r"><b>${fmt(s.expected)}</b></td></tr>
       <tr><td><b>Efectivo contado</b></td><td class="r"><b>${fmt(s.counted)}</b></td></tr>
       <tr><td>Diferencia</td><td class="r ${diff<0?'out':diff>0?'in':''}">${fmt(diff)}</td></tr>
+      <tr><td><b>Balance del día</b> (ingresos − egresos)</td><td class="r"><b>${fmt(s.balance)}</b></td></tr>
+      ${s.usdRate ? `<tr><td>En dólares (a ${fmt(s.usdRate)})</td><td class="r">${fmtUsd(s.balance / s.usdRate)}</td></tr>` : ''}
     </table>${note?`<p>Nota: ${esc(note)}</p>`:''}
     <p class="mut noprint" id="bk">Guardando respaldo…</p>
     <div class="row noprint" style="margin-top:14px"><div><button class="s" style="width:100%" onclick="window.print()">Imprimir</button></div><div><button class="b" style="width:100%" onclick="closeModal();render()">Listo</button></div></div>`);
@@ -945,11 +994,12 @@ const plabel = (k, a) => k==='dia' ? a.toLocaleDateString('es-AR',{day:'2-digit'
   : k==='semana' ? 'sem '+a.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'})
   : k==='mes' ? a.toLocaleDateString('es-AR',{month:'short',year:'2-digit'}) : String(a.getFullYear());
 function vGan(){
+  const rate = getSet().usdRate, utype = getSet().usdType;
   const cards = Object.keys(GK).map(k => {
     const [a,b] = periodRange(k,0), [pa,pb] = periodRange(k,-1);
     const r = agg(a,b), p = agg(pa,pb);
     const dl = p.neta ? Math.round((r.neta-p.neta)/Math.abs(p.neta)*100) : null;
-    return `<div class="stat"><small>${GK[k].cur}</small><b class="${r.neta<0?'out':'in'}">${fmt(r.neta)}</b>
+    return `<div class="stat"><small>${GK[k].cur}</small><b class="${r.neta<0?'out':'in'}">${fmt(r.neta)}</b>${rate ? `<div class="mut" style="font-size:13px">≈ ${fmtUsd(r.neta / rate)}</div>` : ''}
       <div class="mut" style="font-size:12px;margin-top:6px">Ventas ${fmt(r.ing)}<br>Gastos ${fmt(r.gas)}</div>
       ${dl===null?'':`<div style="font-size:12px;margin-top:4px" class="${dl<0?'out':'in'}">${dl<0?'▼':'▲'} ${Math.abs(dl)}% vs ${GK[k].prev}</div>`}</div>`;
   }).join('');
@@ -959,12 +1009,16 @@ function vGan(){
   const chart = `<div style="display:flex;gap:4px;align-items:flex-end;height:130px;margin-top:14px">${rows.map(x=>`<div title="${plabel(ganKind,x.a)}: ${fmt(x.r.neta)}" style="flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end"><div style="height:${Math.max(2,Math.abs(x.r.neta)/max*100)}%;background:var(${x.r.neta<0?'--bad':'--ac'});border-radius:4px 4px 0 0"></div></div>`).join('')}</div>
     <div style="display:flex;gap:4px">${rows.map(x=>`<div class="mut" style="flex:1;font-size:10px;text-align:center;overflow:hidden;white-space:nowrap">${plabel(ganKind,x.a)}</div>`).join('')}</div>`;
   $('#app').innerHTML = `<div class="card"><h2>Ganancias</h2><div class="grid">${cards}</div>
-    <p class="mut" style="margin:12px 0 0;font-size:12px">Ganancia = ventas − gastos (todos los egresos). Los movimientos anulados no cuentan.</p></div>
+    <p class="mut" style="margin:12px 0 0;font-size:12px">Ganancia = ventas − gastos (todos los egresos). Los movimientos anulados no cuentan.</p>
+    <div class="row" style="margin-top:10px;align-items:center"><div class="fit mut" style="font-size:13px">Dólar</div>
+    <div class="fit"><select aria-label="Tipo de dólar" onchange="setUsdType(this.value)" style="min-height:36px">${[['oficial','Oficial'],['blue','Blue'],['bolsa','MEP']].map(([v,l]) => `<option value="${v}"${utype===v?' selected':''}>${l}</option>`).join('')}</select></div>
+    <div class="mut" style="font-size:13px">${rate ? 'precio de venta a ' + fmt(rate) + ' por dólar, de hoy, para todos los períodos' : 'cotización no disponible'}</div></div></div>
     <div class="card"><h2>Evolución</h2><div class="seg">
     ${Object.keys(GK).map(k=>`<div class="fit"><button class="${k===ganKind?'b':'s'}" onclick="ganKind='${k}';vGan()">${{dia:'Días',semana:'Semanas',mes:'Meses',anio:'Años'}[k]}</button></div>`).join('')}</div>
     ${chart}
     <table style="margin-top:14px"><tr><th>Período</th><th class="r">Ventas</th><th class="r">Gastos</th><th class="r">Ganancia</th></tr>
     ${rows.slice().reverse().map(x=>`<tr><td>${plabel(ganKind,x.a)}</td><td class="r">${fmt(x.r.ing)}</td><td class="r">${fmt(x.r.gas)}</td><td class="r ${x.r.neta<0?'out':'in'}">${fmt(x.r.neta)}</td></tr>`).join('')}</table></div>`;
+  refreshRate();
 }
 
 /* ===== HISTORIAL ===== */
