@@ -982,10 +982,31 @@ function addStockDlg(id){
   const p=S.products.find(x=>x.id===id);
   modal(`<h2>Agregar stock</h2><p>${esc(pname(p))} — actual: <b>${p.stock}</b></p>
     <div class="field"><label>Unidades a sumar</label><input id="au" inputmode="numeric" value="1"></div>
+    <div class="field"><label>Precio de compra por unidad (opcional)</label><input id="ac" inputmode="decimal" placeholder="${p.cost ? 'Último: ' + fmt(p.cost) : 'Ej: 4500'}" oninput="buyHint(${p.internal ? 'true' : 'false'}, ${p.price||0})">
+      <div id="ach" class="mut" style="font-size:12px;margin-top:4px">${p.internal ? '' : 'Si lo cargás, el precio de venta pasa a ser compra × ' + String(MARKUP).replace('.', ',') + '. Precio actual: ' + fmt(p.price) + '.'}</div></div>
     <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="addStock('${id}')">Sumar</button></div></div>`);
-  $('#au').select(); $('#au').addEventListener('keydown', e=>{ if(e.key==='Enter') addStock(id); });
+  $('#au').select(); $('#au').addEventListener('keydown', e=>{ if(e.key==='Enter') addStock(id); }); $('#ac').addEventListener('keydown', e=>{ if(e.key==='Enter') addStock(id); });
 }
-function addStock(id){ const p=S.products.find(x=>x.id===id); const n=Math.round(num($('#au').value)); p.stock+=n; persist('products'); if(n) logStock(p, n, 'Ingreso', ''); closeModal(); render(); stockFound={code:p.barcode,product:p}; drawFound(); }
+// el precio de venta es el de compra por MARKUP, redondeado a múltiplos de $10 (igual que Ajustar precios)
+const MARKUP = 2.2;
+const salePrice = cost => Math.round(cost * MARKUP / 10) * 10;
+function buyHint(internal, current){
+  const el = $('#ach'); if(!el || internal) return;
+  const c = num($('#ac').value);
+  el.textContent = c > 0 ? 'Precio de venta nuevo: ' + fmt(salePrice(c)) + (current ? ' (ahora ' + fmt(current) + ')' : '') : 'Si lo cargás, el precio de venta pasa a ser compra × ' + String(MARKUP).replace('.', ',') + '. Precio actual: ' + fmt(current) + '.';
+}
+function addStock(id){
+  const p=S.products.find(x=>x.id===id); const n=Math.round(num($('#au').value)), cost=num($('#ac').value);
+  p.stock+=n;
+  let note = '';
+  if(cost > 0){ p.cost = cost; note = 'compra ' + fmt(cost); if(!p.internal){ const np = salePrice(cost); if(np !== p.price) note += ', venta ' + fmt(p.price) + ' → ' + fmt(np); p.price = np; } }
+  persist('products'); if(n) logStock(p, n, 'Ingreso', note); closeModal(); render(); stockFound={code:p.barcode,product:p}; drawFound();
+}
+// en la ficha del producto: si cargás el costo y no pusiste precio, se propone compra × MARKUP
+function autoPrice(){
+  const c = num($('#pc').value), pp = $('#pp'); if(!pp) return;
+  if(c > 0 && (!pp.value || pp.dataset.auto==='1')){ pp.value = salePrice(c); pp.dataset.auto = '1'; }
+}
 function productForm(p, code){
   p = p || {name:'',barcode:code||'',presentation:'',price:'',cost:'',stock:1,category:'',min:3};
   return `<div class="field"><label>Código de barras (opcional)</label><input id="pb" value="${esc(p.barcode)}"></div>
@@ -998,7 +1019,8 @@ function productForm(p, code){
       const c = p.contains || {};
       return `<div class="field"><label>Al abrirla, trae (opcional)</label><div class="row"><div><input id="pcq" inputmode="numeric" value="${c.qty||''}" placeholder="Ej: 3"></div><div><select id="pct"><option value="">—</option>${sib.map(x => `<option value="${x.id}"${c.to===x.id?' selected':''}>${esc(x.presentation||x.name)}</option>`).join('')}</select></div></div></div>`;
     })()}
-    <div class="row field"><div><label>Precio de venta</label><input id="pp" inputmode="decimal" value="${p.price}"></div><div><label>Costo (opcional)</label><input id="pc" inputmode="decimal" value="${p.cost||''}"></div></div>
+    <div class="row field"><div><label>Precio de venta</label><input id="pp" inputmode="decimal" value="${p.price}" oninput="this.dataset.auto=''"></div><div><label>Costo (opcional)</label><input id="pc" inputmode="decimal" value="${p.cost||''}" oninput="autoPrice()"></div></div>
+    <div class="mut" style="font-size:12px;margin:-6px 0 12px">Con el costo cargado y el precio vacío, el precio se calcula como costo × ${String(MARKUP).replace('.', ',')}.</div>
     <div class="row field"><div><label>Stock</label><input id="ps" inputmode="numeric" value="${p.stock}"></div><div><label>Stock mínimo</label><input id="pm" inputmode="numeric" value="${minOf(p)}"></div>
     <div><label>Categoría</label><input id="pcat" list="catl" value="${esc(p.category||'')}" placeholder="Alimento, farmacia…"><datalist id="catl">${cats().map(c=>`<option value="${esc(c)}">`).join('')}</datalist></div></div>
     <div class="field"><label style="display:flex;gap:8px;align-items:center;font-size:14px"><input type="checkbox" id="pint" ${p.internal?'checked':''}> Uso interno: no se vende, solo se lleva la cantidad</label></div>`;
