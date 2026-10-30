@@ -740,7 +740,6 @@ function vVender(){
     <div class="row"><div><input id="q" placeholder="Escaneá o buscá un producto" autocomplete="off"></div><div class="fit"><button class="s" aria-label="Escanear con la cámara" onclick="cameraScan(c=>addByCode(c))"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button></div></div>
     <div id="sug"></div></div>
     <div class="card"><h2>Servicios</h2>
-    ${S.services.length?`<div class="chips">${S.services.map(s=>`<button class="s" onclick="addSaved('${s.id}')">${esc(s.name)} · ${fmt(s.price)}</button>`).join('')}</div>`:''}
     <div class="row"><div style="flex:2"><label>Buscar o escribir servicio</label><input id="sn" placeholder="Consulta, vacuna, baño…"></div>
     <div><label>Precio</label><input id="sp" inputmode="decimal"></div>
     <div class="fit"><label style="margin:0 0 8px"><input type="checkbox" id="ssv"> guardar</label></div>
@@ -890,6 +889,7 @@ function cobrar(){
 /* ===== STOCK ===== */
 const cats = () => [...new Set(S.products.map(p => p.category).filter(Boolean))].sort();
 function vStock(){
+  showAllP = false; showAllS = false;
   $('#app').innerHTML = `<div class="card"><h2>Consultar / cargar stock</h2>
     <div class="row"><div><input id="sq" placeholder="Escaneá un código para consultar o sumar stock…" autocomplete="off"></div>
     <div class="fit"><button class="s" aria-label="Escanear con la cámara" onclick="cameraScan(c=>stockScan(c))"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button></div>
@@ -897,11 +897,11 @@ function vStock(){
     <div class="field" style="margin-top:12px"><label>Al escanear</label><select id="smode"><option value="ver"${!fast&&!useMode?' selected':''}>Consultar precio y stock</option><option value="sumar"${fast?' selected':''}>Sumar 1 unidad (si no existe, abre el alta)</option><option value="usar"${useMode?' selected':''}>Descontar 1 por uso interno</option></select></div>
     <div class="flash" id="msg"></div>
     <div id="found" style="margin-top:6px"></div></div>
-    <div class="card"><div class="row" style="margin-bottom:10px"><h2 style="margin:0;align-self:center">Productos (${S.products.length})</h2><div><input id="fl" placeholder="Filtrar por nombre, código o categoría…"></div>
-    <div class="fit"><button class="s" onclick="priceDlg()">% Precios</button></div>
+    <div class="card"><h2>Buscar producto (${S.products.length})</h2><input id="fl" type="search" placeholder="Nombre, código o categoría" autocomplete="off" style="margin-bottom:10px">
+    <div class="row" style="margin-bottom:10px"><div class="fit"><button class="s" onclick="priceDlg()">% Precios</button></div>
     <div class="fit"><button class="s" onclick="$('#csvf').click()">Importar CSV</button><input type="file" id="csvf" accept=".csv,text/csv" hidden></div></div><div id="plist"></div></div>
-    <div class="card"><h2>Movimientos de stock</h2><div id="slog"></div></div>
-    <div class="card"><h2>Servicios guardados</h2>
+    <div class="card"><details><summary style="cursor:pointer;font-weight:600">Movimientos de stock</summary><div id="slog" style="margin-top:10px"></div></details></div>
+    <div class="card"><h2>Buscar servicio</h2>
     <div class="row" style="margin-bottom:10px"><div style="flex:2"><input id="svn" placeholder="Buscar o crear servicio"></div><div><input id="svp" inputmode="decimal" placeholder="Precio"></div><div class="fit"><button class="s" onclick="saveService()">Guardar</button></div></div>
     <div id="svl"></div></div>`;
   const q = $('#sq');
@@ -1000,8 +1000,10 @@ function drawFound(){
     `<div style="margin-top:8px"><button class="s" onclick="newProductDlg('${esc(code)}', '${list[0].id}')">+ Otra presentación${code ? ' de este código' : ' de este producto'}</button></div>`;
 }
 const minOf = p => p.min ?? 3;
+let showAllP = false, showAllS = false;
 function drawList(){
   const t = ($('#fl')||{value:''}).value.toLowerCase();
+  if(!t && !showAllP){ $('#plist').innerHTML = S.products.length ? `<div class="empty">Escribí arriba para buscar entre ${S.products.length} productos. <button class="s" onclick="showAllP=true;drawList()">Ver todos</button></div>` : '<div class="empty">Sin productos. Escaneá uno para empezar.</div>'; return; }
   const r = S.products.filter(p => p.name.toLowerCase().includes(t) || p.barcode.includes(t) || (p.category||'').toLowerCase().includes(t)).sort((a,b)=>a.name.localeCompare(b.name));
   $('#plist').innerHTML = r.length ? `<table><tr><th>Producto</th><th class="hide-s">Categoría</th><th class="hide-s">Código</th><th class="r">Precio</th><th class="r">Stock</th><th></th></tr>${r.map(p=>`<tr><td>${esc(p.name)}${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}</td><td class="hide-s mut">${esc(p.category||'')}</td><td class="hide-s mut">${esc(p.barcode)}</td><td class="r">${p.internal?'—':fmt(p.price)}</td><td class="r ${p.stock<=0?'out':p.stock<=minOf(p)?'low':''}" title="Mínimo ${minOf(p)}">${p.stock}</td><td class="r"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></td></tr>`).join('')}</table>` : '<div class="empty">Sin productos. Escaneá uno para empezar.</div>';
 }
@@ -1126,6 +1128,8 @@ function importCsv(file){
 }
 
 function drawServices(){
+  const q0 = (($('#svn')||{}).value||'').trim();
+  if(!q0 && !showAllS){ $('#svl').innerHTML = S.services.length ? `<div class="empty">Escribí arriba para buscar entre ${S.services.length} servicios. <button class="s" onclick="showAllS=true;drawServices()">Ver todos</button></div>` : '<div class="empty">Sin servicios guardados</div>'; return; }
   const q = (($('#svn')||{}).value||'').trim().toLowerCase(), list = S.services.filter(s => !q || s.name.toLowerCase().includes(q));
   $('#svl').innerHTML = list.length ? `<table>${list.map(s=>`<tr><td>${esc(s.name)}</td><td class="r">${fmt(s.price)}</td><td class="r" style="white-space:nowrap"><button class="s" onclick="editServiceDlg('${s.id}')">Editar</button> <button class="d" aria-label="Eliminar" onclick="delService('${s.id}')">✕</button></td></tr>`).join('')}</table>` : '<div class="empty">' + (S.services.length ? 'Ningún servicio coincide.' : 'Sin servicios guardados') + '</div>';
 }
