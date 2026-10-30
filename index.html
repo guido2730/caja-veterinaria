@@ -661,7 +661,7 @@ function vStock(){
     <div class="row"><div><input id="sq" placeholder="Escaneá un código para consultar o sumar stock…" autocomplete="off"></div>
     <div class="fit"><button class="s" aria-label="Escanear con la cámara" onclick="cameraScan(c=>stockScan(c))"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button></div>
     <div class="fit"><button class="b" onclick="newProductDlg('')">+ Nuevo</button></div></div>
-    <div class="field" style="margin-top:12px"><label>Al escanear</label><select id="smode"><option value="ver"${!fast&&!useMode?' selected':''}>Consultar precio y stock</option><option value="sumar"${fast?' selected':''}>Sumar 1 unidad (si no existe, abre el alta)</option><option value="usar"${useMode?' selected':''}>Descontar 1 por uso (consultorio)</option></select></div>
+    <div class="field" style="margin-top:12px"><label>Al escanear</label><select id="smode"><option value="ver"${!fast&&!useMode?' selected':''}>Consultar precio y stock</option><option value="sumar"${fast?' selected':''}>Sumar 1 unidad (si no existe, abre el alta)</option><option value="usar"${useMode?' selected':''}>Descontar 1 por uso interno</option></select></div>
     <div class="flash" id="msg"></div>
     <div id="found" style="margin-top:6px"></div></div>
     <div class="card"><div class="row" style="margin-bottom:10px"><h2 style="margin:0;align-self:center">Productos (${S.products.length})</h2><div><input id="fl" placeholder="Filtrar por nombre, código o categoría…"></div>
