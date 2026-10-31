@@ -916,6 +916,7 @@ function vStock(){
     <div class="field" style="margin-top:12px"><label>Al escanear</label><select id="smode"><option value="ver"${!fast&&!useMode?' selected':''}>Consultar precio y stock</option><option value="sumar"${fast?' selected':''}>Sumar 1 unidad (si no existe, abre el alta)</option><option value="usar"${useMode?' selected':''}>Descontar 1 por uso interno</option></select></div>
     <div class="flash" id="msg"></div>
     <div id="found" style="margin-top:6px"></div></div>
+    <div id="miss"></div>
     <div class="card"><h2>Buscar producto o servicio</h2><input id="fl" type="search" placeholder="Nombre, código o categoría" autocomplete="off" style="margin-bottom:10px">
     <div class="row" style="margin-bottom:10px"><div class="fit"><button class="s" onclick="newServiceDlg('', false)">+ Servicio</button></div>
     <div class="fit"><button class="s" onclick="priceDlg()">% Precios</button></div>
@@ -1018,7 +1019,15 @@ function drawFound(){
 }
 const minOf = p => p.min ?? 3;
 let showAllP = false, showAllS = false;
+// Faltantes: productos sin stock (en rojo). Salen solos de la lista cuando se carga stock.
+function drawMissing(){
+  const el = $('#miss'); if(!el) return;
+  const r = S.products.filter(p => p.stock <= 0).sort((a, b) => pname(a).localeCompare(pname(b)));
+  el.innerHTML = r.length ? `<div class="card"><details open><summary style="cursor:pointer;font-weight:600"><span class="out">Faltantes (${r.length})</span></summary>
+    <table style="margin-top:10px">${r.map(p => `<tr><td>${esc(pname(p))}${p.internal ? ' <span class="tag">uso interno</span>' : ''}</td><td class="r" style="white-space:nowrap"><button class="b" onclick="addStockDlg('${p.id}')">+ Agregar</button></td></tr>`).join('')}</table></details></div>` : '';
+}
 function drawList(){
+  drawMissing();
   const t = ($('#fl')||{value:''}).value.toLowerCase();
   if(!t && !showAllP){ $('#plist').innerHTML = S.products.length || S.services.length ? `<div class="empty">Escribí arriba para buscar entre ${S.products.length} productos y ${S.services.length} servicios. <button class="s" onclick="showAllP=true;drawList();drawServices()">Ver todos</button></div>` : '<div class="empty">Sin productos. Escaneá uno para empezar.</div>'; return; }
   const r = S.products.filter(p => p.name.toLowerCase().includes(t) || p.barcode.includes(t) || (p.category||'').toLowerCase().includes(t)).sort((a,b)=>a.name.localeCompare(b.name));
