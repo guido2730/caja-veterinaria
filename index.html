@@ -738,13 +738,28 @@ function vVender(){
   }
   $('#app').innerHTML = `<div class="vgrid"><div class="vleft"><div class="card"><h2>Agregar a la venta</h2>
     <div class="row"><div><input id="q" type="search" placeholder="Escaneá o buscá un producto o servicio" autocomplete="off"></div><div class="fit"><button class="s" aria-label="Escanear con la cámara" onclick="cameraScan(c=>addByCode(c))"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button></div></div>
-    <div id="sug"></div></div>
+    <div id="sug"></div>
+    <div class="mut" style="font-size:13px;margin:14px 0 6px">Venta libre: solo texto y precio</div>
+    <div class="row"><div style="flex:2"><input id="fn" placeholder="Concepto (consulta, baño…)" autocomplete="off"></div>
+    <div><input id="fp" inputmode="decimal" placeholder="Precio"></div>
+    <div class="fit"><button class="s" onclick="addFree()">Agregar</button></div></div>
+    <label style="display:flex;gap:8px;align-items:center;font-size:13px;margin-top:6px"><input type="checkbox" id="fsv"> Guardarlo como servicio para próximas ventas</label></div>
     </div><div class="ticket" id="cartBox"></div></div>`;
+  $('#fn').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); $('#fp').focus(); } });
+  $('#fp').addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); addFree(); } });
   const q = $('#q');
   q.addEventListener('input', () => suggest(q.value));
   q.addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); const v=q.value.trim(); if(v) addByCode(v); } });
   suggest('');
   drawCart(); q.focus();
+}
+function addFree(){
+  const name = $('#fn').value.trim(), price = num($('#fp').value);
+  if(!name || price<=0){ alert('Poné el concepto y un precio mayor a 0.'); return; }
+  cart.push({productId:null, name, price, qty:1});
+  if($('#fsv').checked && !S.services.some(s => s.name.toLowerCase()===name.toLowerCase())){ S.services.push({id:uid(), name, price}); persist('services'); }
+  $('#fn').value = ''; $('#fp').value = ''; $('#fsv').checked = false;
+  drawCart(); $('#fn').focus();
 }
 const pname = p => p.presentation ? p.name + ' · ' + p.presentation : p.name;
 const sameFam = (a, b) => a.barcode ? a.barcode===b.barcode : (!b.barcode && a.name.trim().toLowerCase()===b.name.trim().toLowerCase());
