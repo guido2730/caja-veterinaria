@@ -144,6 +144,8 @@ td.r,th.r{text-align:right}
 .brkh{display:flex;justify-content:space-between;align-items:baseline;margin-top:20px;padding-bottom:4px;border-bottom:1px solid var(--bd);font-weight:600}
 .brk{margin-top:10px}.brk>div{display:flex;gap:8px;align-items:baseline}.brk>div>span{flex:1}.brk>div>small{width:40px;text-align:right;color:var(--mut)}
 .brk i{display:block;height:6px;border-radius:3px;background:var(--bd);margin-top:4px;overflow:hidden}.brk u{display:block;height:100%;background:var(--ac);border-radius:3px}
+.monob{border:1.5px solid var(--warn);border-left-width:6px;border-radius:10px;padding:10px 14px;margin:12px 0;font-size:14px}
+.monob.hi{border-color:var(--bad)}.monob p{margin:2px 0}.monob .row{margin-top:8px}
 .seg{display:flex;gap:6px}.seg .fit{flex:1}.seg button{width:100%;min-height:40px;padding:0 6px}
 .themebtn{flex:none;width:40px;height:40px;display:grid;place-items:center;border:0;border-radius:10px;background:none;color:var(--mut);cursor:pointer}
 .themebtn:hover{color:var(--tx);background:var(--ac2)}
@@ -420,6 +422,7 @@ function render(){
   updateBar();
   if(!hasAccess()){ vLogin(); return; }
   ({caja:vCaja, vender:vVender, stock:vStock, gan:vGan, hist:vHist})[view]();
+  const bn = monoBanner(); if(bn && $('#app')) $('#app').insertAdjacentHTML('afterbegin', bn);
 }
 
 /* ===== RESPALDO =====
@@ -470,7 +473,10 @@ function backupCard(){
 /* ===== CUENTAS DE COBRO =====
    Tarjeta (Point), transferencia y QR entran a una de dos cuentas de Mercado Pago.
    Cada cobro guarda la cuenta ('a' o 'b') y si ya se verificó contra la app de Mercado Pago. */
-const DEFAULT_SET = {id:'main', accounts:['MP Nadia','MP Guido'], defaultAcc:'a', usdType:'oficial', usdRate:0};
+/* Topes anuales de monotributo (ingresos brutos, últimos 12 meses), escala de agosto 2026 a enero 2027. ARCA los actualiza cada 6 meses. */
+const MONO_DEF = {A:12009410.45, B:17595182.74, C:24670494.31};
+const DEFAULT_SET = {id:'main', accounts:['MP Nadia','MP Guido'], defaultAcc:'a', usdType:'oficial', usdRate:0,
+  monoCat:{a:'C', b:'A'}, monoLim:{a:MONO_DEF.C, b:MONO_DEF.A}, monoUntil:'2027-01-31'};
 const getSet = () => Object.assign({}, DEFAULT_SET, S.settings[0] || {});
 const accKey = i => String.fromCharCode(97 + i);
 const accKeys = () => getSet().accounts.map((_, i) => accKey(i));
@@ -1297,7 +1303,7 @@ function vGan(){
     ${Object.keys(GK).map(k=>`<div class="fit"><button class="${k===ganKind?'b':'s'}" onclick="ganKind='${k}';vGan()">${{dia:'Días',semana:'Semanas',mes:'Meses',anio:'Años'}[k]}</button></div>`).join('')}</div>
     ${chart}
     <table style="margin-top:14px"><tr><th>Período</th><th class="r">Ventas</th><th class="r">Gastos</th><th class="r">Ganancia</th></tr>
-    ${rows.slice().reverse().map(x=>`<tr><td>${plabel(ganKind,x.a)}</td><td class="r">${F(V(x.r,'ing'))}</td><td class="r">${F(V(x.r,'gas'))}</td><td class="r ${V(x.r,'neta')<0?'out':'in'}">${F(V(x.r,'neta'))}</td></tr>`).join('')}</table></div>${brkCard(usd, rf, F)}`;
+    ${rows.slice().reverse().map(x=>`<tr><td>${plabel(ganKind,x.a)}</td><td class="r">${F(V(x.r,'ing'))}</td><td class="r">${F(V(x.r,'gas'))}</td><td class="r ${V(x.r,'neta')<0?'out':'in'}">${F(V(x.r,'neta'))}</td></tr>`).join('')}</table></div>${brkCard(usd, rf, F)}${monoCard()}`;
   refreshRate();
 }
 
@@ -1345,6 +1351,91 @@ function brkCard(usd, rf, F){
       + (outKeys.length ? sec('Gastos por medio', outM, outKeys, ML, () => '') : '')
       : '<div class="empty">Sin movimientos en este período.</div>'}
     <p class="mut" style="margin:12px 0 0;font-size:12px">El efectivo no tiene cuenta. Los movimientos anulados y los retiros o aportes de efectivo no cuentan.</p></div>`;
+}
+
+/* ===== MONOTRIBUTO =====
+   El tope de ARCA es anual y se mide sobre los últimos 12 meses (este mes y los 11 anteriores). Dividido por 12 da un ritmo
+   mensual de referencia, pero el límite real es el acumulado de 12 meses. Se cuentan los cobros con cuenta de cada persona
+   (efectivo no tiene cuenta). Siempre en pesos. */
+function monoData(){
+  const st = getSet(), months = [];
+  for(let i = 11; i >= 0; i--) months.push(periodRange('mes', -i));
+  const from = months[0][0], to = months[11][1], rows = [];
+  accKeys().forEach(k => {
+    const cat = (st.monoCat||{})[k], lim = +((st.monoLim||{})[k]) || 0;
+    if(!cat) return;
+    const per = months.map(() => 0);
+    S.movements.forEach(m => {
+      if(m.voided || m.type!=='ingreso' || m.account!==k) return;
+      const t = new Date(m.ts); if(t < from || t >= to) return;
+      const i = months.findIndex(([a,b]) => t >= a && t < b); if(i >= 0) per[i] += m.amount;
+    });
+    const tot = per.reduce((x,y) => x + y, 0), cur = per[11], pace = Math.round(lim / 12);
+    const pct = lim ? tot/lim*100 : 0, mp = pace ? cur/pace*100 : 0;
+    const level = !lim ? 0 : pct>=100 ? 3 : pct>=90 ? 2 : pct>=80 ? 1 : 0;
+    rows.push({k, cat, lim, per, tot, cur, pace, pct, mp, level, left:Math.max(0, lim - tot)});
+  });
+  let cash = 0;
+  S.movements.forEach(m => { if(!m.voided && m.type==='ingreso' && !m.account){ const t = new Date(m.ts); if(t >= from && t < to) cash += m.amount; } });
+  return {months, rows, cash};
+}
+const monoAckGet = () => { try{ return JSON.parse(localStorage.getItem('caja_mono_ack')) || {}; }catch{ return {}; } };
+const monoKey = r => r.k + '|' + today().slice(0,7);
+const monoLvl = r => Math.max(r.level, r.lim && r.mp >= 100 ? 1 : 0);
+function monoBanner(){
+  if(!S.movements.length) return '';
+  const ack = monoAckGet(), items = monoData().rows.filter(r => r.lim && monoLvl(r) > (ack[monoKey(r)] || 0));
+  if(!items.length) return '';
+  const hi = items.some(r => r.level >= 2);
+  return `<div class="monob${hi?' hi':''}" role="alert"><b>Monotributo</b>${items.map(r => {
+    const who = esc(accLabel(r.k)) + ' (cat. ' + esc(r.cat) + ')';
+    return r.level >= 3 ? `<p>${who}: <b>superaste el tope</b>. Llevás ${fmt(r.tot)} de ${fmt(r.lim)} en los últimos 12 meses (${Math.round(r.pct)}%).</p>`
+      : r.level >= 1 ? `<p>${who}: llevás ${fmt(r.tot)} de ${fmt(r.lim)} en los últimos 12 meses (<b>${Math.round(r.pct)}%</b>). Te quedan ${fmt(r.left)}.</p>`
+      : `<p>${who}: este mes ya cobraste ${fmt(r.cur)}, más que el ritmo mensual de ${fmt(r.pace)} (tope anual ÷ 12). Es solo un aviso de ritmo; el tope real es el de 12 meses (${Math.round(r.pct)}% usado).</p>`;
+  }).join('')}<div class="row"><div class="fit"><button class="s" onclick="monoAck()">Entendido</button></div></div></div>`;
+}
+function monoAck(){
+  const ack = monoAckGet(); monoData().rows.forEach(r => { ack[monoKey(r)] = monoLvl(r); });
+  try{ localStorage.setItem('caja_mono_ack', JSON.stringify(ack)); }catch(e){}
+  render();
+}
+// La escala vale hasta el próximo 31 de enero o 31 de julio: pasada esa fecha avisa que los topes pueden estar viejos.
+function monoNextUntil(){ const n = new Date(), y = n.getFullYear(), j = new Date(y,0,31), l = new Date(y,6,31);
+  const d = n < j ? j : n < l ? l : new Date(y+1,0,31); return dayOf(d.toISOString()); }
+function setMonoCat(k, c){
+  const st = getSet(), cat = Object.assign({}, st.monoCat), lim = Object.assign({}, st.monoLim);
+  if(c){ cat[k] = c; lim[k] = MONO_DEF[c] || 0; } else delete cat[k];
+  saveSettings({monoCat:cat, monoLim:lim}); vGan();
+}
+function setMonoLim(k, v){
+  const lim = Object.assign({}, getSet().monoLim); lim[k] = Math.max(0, num(v));
+  saveSettings({monoLim:lim, monoUntil:monoNextUntil()}); vGan();
+}
+function monoCard(){
+  const st = getSet(), d = monoData(), old = st.monoUntil && today() > st.monoUntil;
+  const mlabel = a => a.toLocaleDateString('es-AR',{month:'short',year:'2-digit'});
+  const bar = (pc, bad) => `<i style="display:block;height:8px;border-radius:4px;background:var(--bd);margin-top:4px;overflow:hidden"><u style="display:block;height:100%;width:${Math.min(100,pc)}%;background:var(${bad?'--bad':pc>=80?'--warn':'--ac'});border-radius:4px"></u></i>`;
+  const blocks = d.rows.map(r => !r.lim ? `<div class="stat" style="margin-top:10px"><b>${esc(accLabel(r.k))} · cat. ${esc(r.cat)}</b><div class="mut">Cargá el tope anual de la categoría ${esc(r.cat)} en "Configurar".</div></div>` : `
+    <div class="stat" style="margin-top:10px"><div style="display:flex;justify-content:space-between;gap:8px"><b style="font-size:17px">${esc(accLabel(r.k))} · cat. ${esc(r.cat)}</b><span class="${r.level>=2?'out':r.level===1?'low':'in'}">${Math.round(r.pct)}%</span></div>
+      <div style="margin-top:8px">Últimos 12 meses: <b>${fmt(r.tot)}</b> <span class="mut">de ${fmt(r.lim)}</span></div>${bar(r.pct, r.level>=2)}
+      <div class="mut" style="font-size:13px;margin-top:4px">${r.level>=3 ? 'Superaste el tope por ' + fmt(r.tot - r.lim) : 'Te quedan ' + fmt(r.left)}</div>
+      <div style="margin-top:10px">Este mes: <b>${fmt(r.cur)}</b> <span class="mut">de ${fmt(r.pace)} (tope ÷ 12)</span></div>${bar(r.mp, false)}</div>`).join('');
+  const table = d.rows.length ? `<details style="margin-top:12px"><summary style="cursor:pointer;font-weight:600">Mes por mes</summary>
+    <table style="margin-top:8px"><tr><th>Mes</th>${d.rows.map(r => `<th class="r">${esc(accLabel(r.k))}</th>`).join('')}</tr>
+    ${d.months.map(([a],i) => `<tr><td>${mlabel(a)}</td>${d.rows.map(r => `<td class="r ${r.lim && r.per[i] > r.pace ? 'low' : ''}">${fmt(r.per[i])}</td>`).join('')}</tr>`).reverse().join('')}
+    <tr><th>Total</th>${d.rows.map(r => `<th class="r">${fmt(r.tot)}</th>`).join('')}</tr></table>
+    <p class="mut" style="font-size:12px;margin:6px 0 0">En ámbar: meses por encima del ritmo mensual. Un mes alto no es una infracción: lo que cuenta es el total de 12 meses.</p></details>` : '';
+  const conf = `<details style="margin-top:12px"><summary style="cursor:pointer;font-weight:600">Configurar</summary>
+    ${accKeys().map(k => `<div class="row" style="margin-top:8px;align-items:flex-end"><div><label>${esc(accLabel(k))}: categoría</label>
+      <select onchange="setMonoCat('${k}',this.value)"><option value="">No aplica</option>${'ABCDEFGHIJK'.split('').map(c => `<option${(st.monoCat||{})[k]===c?' selected':''}>${c}</option>`).join('')}</select></div>
+      <div><label>Tope anual (pesos)</label><input inputmode="decimal" value="${(st.monoLim||{})[k] || ''}" onchange="setMonoLim('${k}',this.value)"></div></div>`).join('')}
+    <p class="mut" style="font-size:12px;margin:8px 0 0">Topes cargados: escala de ARCA de agosto 2026 a enero 2027 (A, B y C). Para otra categoría escribí el tope a mano. Verificalo en ARCA.</p></details>`;
+  return `<div class="card"><h2>Monotributo</h2>
+    <p class="mut" style="margin:0;font-size:13px">Cobros de los últimos 12 meses en la cuenta de cada persona, contra el tope anual de su categoría. Siempre en pesos.</p>
+    ${old ? `<div class="monob hi" style="margin-top:10px">Los topes cargados son de la escala que vencía el ${esc(st.monoUntil)}. ARCA los actualiza cada 6 meses: revisalos en "Configurar".</div>` : ''}
+    ${blocks || '<div class="empty">Ninguna cuenta tiene categoría. Elegila en "Configurar".</div>'}${table}
+    <p class="mut" style="font-size:12px;margin:12px 0 0">Efectivo y cobros sin cuenta no suman a nadie${d.cash ? ` (últimos 12 meses: ${fmt(d.cash)})` : ''}. Esto cuenta cobros, no facturas emitidas: contrastalo con lo que figura en ARCA.</p>
+    ${conf}</div>`;
 }
 
 /* ===== HISTORIAL ===== */
