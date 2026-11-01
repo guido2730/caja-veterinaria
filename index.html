@@ -141,6 +141,9 @@ td.r,th.r{text-align:right}
 @media (max-width:759px){.pay .fit{flex:1 1 100%}.pay button{width:100%}.total{font-size:36px}}
 #q{min-height:54px;font-size:17px;border-width:2px;border-color:var(--ac)}
 .ico{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linejoin:round;vertical-align:middle}
+.brkh{display:flex;justify-content:space-between;align-items:baseline;margin-top:20px;padding-bottom:4px;border-bottom:1px solid var(--bd);font-weight:600}
+.brk{margin-top:10px}.brk>div{display:flex;gap:8px;align-items:baseline}.brk>div>span{flex:1}.brk>div>small{width:40px;text-align:right;color:var(--mut)}
+.brk i{display:block;height:6px;border-radius:3px;background:var(--bd);margin-top:4px;overflow:hidden}.brk u{display:block;height:100%;background:var(--ac);border-radius:3px}
 .seg{display:flex;gap:6px}.seg .fit{flex:1}.seg button{width:100%;min-height:40px;padding:0 6px}
 .themebtn{flex:none;width:40px;height:40px;display:grid;place-items:center;border:0;border-radius:10px;background:none;color:var(--mut);cursor:pointer}
 .themebtn:hover{color:var(--tx);background:var(--ac2)}
@@ -1294,8 +1297,54 @@ function vGan(){
     ${Object.keys(GK).map(k=>`<div class="fit"><button class="${k===ganKind?'b':'s'}" onclick="ganKind='${k}';vGan()">${{dia:'Días',semana:'Semanas',mes:'Meses',anio:'Años'}[k]}</button></div>`).join('')}</div>
     ${chart}
     <table style="margin-top:14px"><tr><th>Período</th><th class="r">Ventas</th><th class="r">Gastos</th><th class="r">Ganancia</th></tr>
-    ${rows.slice().reverse().map(x=>`<tr><td>${plabel(ganKind,x.a)}</td><td class="r">${F(V(x.r,'ing'))}</td><td class="r">${F(V(x.r,'gas'))}</td><td class="r ${V(x.r,'neta')<0?'out':'in'}">${F(V(x.r,'neta'))}</td></tr>`).join('')}</table></div>`;
+    ${rows.slice().reverse().map(x=>`<tr><td>${plabel(ganKind,x.a)}</td><td class="r">${F(V(x.r,'ing'))}</td><td class="r">${F(V(x.r,'gas'))}</td><td class="r ${V(x.r,'neta')<0?'out':'in'}">${F(V(x.r,'neta'))}</td></tr>`).join('')}</table></div>${brkCard(usd, rf, F)}`;
   refreshRate();
+}
+
+/* Cobros y gastos por medio de pago y por cuenta, del período elegido (día, semana, mes o año). Sigue la moneda de Ganancias. */
+let brkKind = 'mes', brkOff = 0;
+function setBrk(k){ brkKind = k; brkOff = 0; keepScroll(vGan); }
+function navBrk(d){ brkOff = Math.min(0, brkOff + d); keepScroll(vGan); }
+function keepScroll(fn){ const y = window.scrollY; fn(); window.scrollTo(0, y); }
+function brkLabel(k, a, b){ const t = brkText(k, a, b); return t.charAt(0).toUpperCase() + t.slice(1); }
+function brkText(k, a, b){
+  const e = new Date(b.getTime() - 864e5), f = (d, o) => d.toLocaleDateString('es-AR', o);
+  return k==='dia' ? f(a,{weekday:'long',day:'numeric',month:'long'})
+    : k==='semana' ? 'Semana del ' + f(a,{day:'numeric',month:'short'}) + ' al ' + f(e,{day:'numeric',month:'short'})
+    : k==='mes' ? f(a,{month:'long',year:'numeric'}) : String(a.getFullYear());
+}
+function brkCard(usd, rf, F){
+  const [a,b] = periodRange(brkKind, brkOff);
+  const inM = {}, outM = {}, inA = {}, pend = {}, cnt = {};
+  const add = (o, k, m) => { const r = usd ? rf(dayOf(m.ts)) : 1; o[k] = (o[k]||0) + (r ? m.amount / r : 0); };
+  S.movements.forEach(m => {
+    if(m.voided || (m.type!=='ingreso' && m.type!=='egreso')) return;
+    const t = new Date(m.ts); if(t < a || t >= b) return;
+    if(m.type==='ingreso'){
+      add(inM, m.method, m); cnt[m.method] = (cnt[m.method]||0) + 1;
+      if(m.account){ add(inA, m.account, m); if(!m.verified) pend[m.account] = (pend[m.account]||0) + 1; }
+    } else add(outM, m.method, m);
+  });
+  const sec = (title, o, keys, label, extra) => {
+    const tot = keys.reduce((x,k) => x + (o[k]||0), 0);
+    return `<div class="brkh"><span>${title}</span><span>${F(tot)}</span></div>` + keys.map(k => {
+      const v = o[k]||0, pc = tot ? v/tot*100 : 0;
+      return `<div class="brk"><div><span>${label(k)}${extra(k)}</span><b>${F(v)}</b><small>${Math.round(pc)}%</small></div><i><u style="width:${pc}%"></u></i></div>`;
+    }).join('');
+  };
+  const accs = [...new Set([...accKeys(), ...Object.keys(inA)])];
+  const outKeys = METHODS.filter(k => outM[k]);
+  const any = METHODS.some(k => inM[k] || outM[k]);
+  return `<div class="card"><h2>Por medio de pago y cuenta</h2>
+    <div class="seg">${[['dia','Día'],['semana','Semana'],['mes','Mes'],['anio','Año']].map(([k,l]) => `<div class="fit"><button class="${k===brkKind?'b':'s'}" onclick="setBrk('${k}')">${l}</button></div>`).join('')}</div>
+    <div class="row" style="align-items:center;margin-top:12px"><div class="fit"><button class="s" aria-label="Período anterior" onclick="navBrk(-1)">◀</button></div>
+    <div style="text-align:center;font-weight:600">${brkLabel(brkKind,a,b)}</div>
+    <div class="fit"><button class="s" aria-label="Período siguiente" onclick="navBrk(1)"${brkOff>=0?' disabled':''}>▶</button></div></div>
+    ${any ? sec('Cobros por medio', inM, METHODS, ML, k => cnt[k] ? ` <small class="mut">${cnt[k]} cobro${cnt[k]>1?'s':''}</small>` : '')
+      + sec('Cobros por cuenta', inA, accs, k => esc(accLabel(k)), k => pend[k] ? ` <small class="out">${pend[k]} sin verificar</small>` : '')
+      + (outKeys.length ? sec('Gastos por medio', outM, outKeys, ML, () => '') : '')
+      : '<div class="empty">Sin movimientos en este período.</div>'}
+    <p class="mut" style="margin:12px 0 0;font-size:12px">El efectivo no tiene cuenta. Los movimientos anulados y los retiros o aportes de efectivo no cuentan.</p></div>`;
 }
 
 /* ===== HISTORIAL ===== */
