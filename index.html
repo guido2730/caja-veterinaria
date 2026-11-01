@@ -1210,15 +1210,53 @@ function periodRange(kind, off){
   else { a = new Date(n.getFullYear()+off, 0, 1); b = new Date(n.getFullYear()+off+1, 0, 1); }
   return [a, b];
 }
-function agg(a, b){
-  const r = {ing:0, gas:0};
+/* Moneda: pesos, o dólares convertidos a la cotización (venta) de CADA día. Convertir todo a la cotización de hoy
+   no sirve para comparar años: solo cambia la escala. La serie histórica viene de argentinadatos.com y se guarda en el celular. */
+let ganCur = (() => { try{ return localStorage.getItem('caja_gan_cur')==='usd' ? 'usd' : 'ars'; }catch{ return 'ars'; } })();
+function setGanCur(c){ ganCur = c; try{ localStorage.setItem('caja_gan_cur', c); }catch(e){} vGan(); }
+const usdHist = {};
+function usdHistGet(type){
+  if(usdHist[type]) return usdHist[type];
+  try{ const c = JSON.parse(localStorage.getItem('caja_usdhist_'+type)); if(c && c.d) return usdHist[type] = c; }catch(e){}
+  return null;
+}
+async function fetchUsdHist(type){
+  const c = usdHistGet(type);
+  if((c && Date.now() - c.t < 6*3600e3) || !navigator.onLine) return;
+  try{
+    const res = await fetch('https://api.argentinadatos.com/v1/cotizaciones/dolares/' + type);
+    if(!res.ok) return;
+    const arr = await res.json();
+    const first = S.movements.reduce((m,x) => x.ts < m ? x.ts : m, new Date().toISOString());
+    const from = dayOf(new Date(new Date(first).getTime() - 15*864e5).toISOString());
+    const d = {};
+    arr.forEach(x => { if(x.fecha >= from && x.venta > 0) d[x.fecha] = x.venta; });
+    if(!Object.keys(d).length) return;
+    usdHist[type] = {t:Date.now(), d};
+    try{ localStorage.setItem('caja_usdhist_'+type, JSON.stringify(usdHist[type])); }catch(e){}
+    if(view==='gan') vGan();
+  }catch(e){}
+}
+// Devuelve una función día → cotización. Fines de semana y feriados usan la última cotización anterior.
+function rateFn(){
+  const type = getSet().usdType, cur = getSet().usdRate, h = usdHistGet(type), memo = {};
+  return day => {
+    if(day in memo) return memo[day];
+    let v = 0, d = day;
+    if(h) for(let i = 0; i < 10 && !v; i++){ v = h.d[d] || 0; d = dayOf(new Date(new Date(d+'T12:00:00').getTime() - 864e5).toISOString()); }
+    return memo[day] = v || cur || 0;
+  };
+}
+function agg(a, b, rf){
+  const r = {ing:0, gas:0, ingU:0, gasU:0};
   S.movements.forEach(m => {
     if(m.voided) return;
     const t = new Date(m.ts); if(t < a || t >= b) return;
     if(m.type==='retiro' || m.type==='aporte') return;
-    if(m.type==='ingreso') r.ing += m.amount; else r.gas += m.amount;
+    const u = rf ? (rf(dayOf(m.ts)) ? m.amount / rf(dayOf(m.ts)) : 0) : 0;
+    if(m.type==='ingreso'){ r.ing += m.amount; r.ingU += u; } else { r.gas += m.amount; r.gasU += u; }
   });
-  r.neta = r.ing - r.gas;
+  r.neta = r.ing - r.gas; r.netaU = r.ingU - r.gasU;
   return r;
 }
 const plabel = (k, a) => k==='dia' ? a.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'})
@@ -1226,29 +1264,37 @@ const plabel = (k, a) => k==='dia' ? a.toLocaleDateString('es-AR',{day:'2-digit'
   : k==='mes' ? a.toLocaleDateString('es-AR',{month:'short',year:'2-digit'}) : String(a.getFullYear());
 function vGan(){
   const rate = getSet().usdRate, utype = getSet().usdType;
+  const hist = !!usdHistGet(utype), usd = ganCur==='usd' && !!(hist || rate), rf = rateFn();
+  if(ganCur==='usd') fetchUsdHist(utype);
+  const F = usd ? fmtUsd : fmt, V = (r, k) => usd ? r[k+'U'] : r[k];
   const cards = Object.keys(GK).map(k => {
     const [a,b] = periodRange(k,0), [pa,pb] = periodRange(k,-1);
-    const r = agg(a,b), p = agg(pa,pb);
-    const dl = p.neta ? Math.round((r.neta-p.neta)/Math.abs(p.neta)*100) : null;
-    return `<div class="stat"><small>${GK[k].cur}</small><b class="${r.neta<0?'out':'in'}">${fmt(r.neta)}</b>${rate ? `<div class="mut" style="font-size:13px">≈ ${fmtUsd(r.neta / rate)}</div>` : ''}
-      <div class="mut" style="font-size:12px;margin-top:6px">Ventas ${fmt(r.ing)}<br>Gastos ${fmt(r.gas)}</div>
+    const r = agg(a,b,rf), p = agg(pa,pb,rf), neta = V(r,'neta'), pn = V(p,'neta');
+    const dl = pn ? Math.round((neta-pn)/Math.abs(pn)*100) : null;
+    const sub = usd ? `<div class="mut" style="font-size:13px">≈ ${fmt(r.neta)}</div>` : rate ? `<div class="mut" style="font-size:13px">≈ ${fmtUsd(r.neta / rate)}</div>` : '';
+    return `<div class="stat"><small>${GK[k].cur}</small><b class="${neta<0?'out':'in'}">${F(neta)}</b>${sub}
+      <div class="mut" style="font-size:12px;margin-top:6px">Ventas ${F(V(r,'ing'))}<br>Gastos ${F(V(r,'gas'))}</div>
       ${dl===null?'':`<div style="font-size:12px;margin-top:4px" class="${dl<0?'out':'in'}">${dl<0?'▼':'▲'} ${Math.abs(dl)}% vs ${GK[k].prev}</div>`}</div>`;
   }).join('');
   const rows = [];
-  for(let i = GK[ganKind].n-1; i >= 0; i--){ const [a,b] = periodRange(ganKind,-i); rows.push({a, r:agg(a,b)}); }
-  const max = Math.max(1, ...rows.map(x => Math.abs(x.r.neta)));
-  const chart = `<div style="display:flex;gap:4px;align-items:flex-end;height:130px;margin-top:14px">${rows.map(x=>`<div title="${plabel(ganKind,x.a)}: ${fmt(x.r.neta)}" style="flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end"><div style="height:${Math.max(2,Math.abs(x.r.neta)/max*100)}%;background:var(${x.r.neta<0?'--bad':'--ac'});border-radius:4px 4px 0 0"></div></div>`).join('')}</div>
+  for(let i = GK[ganKind].n-1; i >= 0; i--){ const [a,b] = periodRange(ganKind,-i); rows.push({a, r:agg(a,b,rf)}); }
+  const max = Math.max(usd ? 0.01 : 1, ...rows.map(x => Math.abs(V(x.r,'neta'))));
+  const chart = `<div style="display:flex;gap:4px;align-items:flex-end;height:130px;margin-top:14px">${rows.map(x=>`<div title="${plabel(ganKind,x.a)}: ${F(V(x.r,'neta'))}" style="flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end"><div style="height:${Math.max(2,Math.abs(V(x.r,'neta'))/max*100)}%;background:var(${V(x.r,'neta')<0?'--bad':'--ac'});border-radius:4px 4px 0 0"></div></div>`).join('')}</div>
     <div style="display:flex;gap:4px">${rows.map(x=>`<div class="mut" style="flex:1;font-size:10px;text-align:center;overflow:hidden;white-space:nowrap">${plabel(ganKind,x.a)}</div>`).join('')}</div>`;
-  $('#app').innerHTML = `<div class="card"><h2>Ganancias</h2><div class="grid">${cards}</div>
+  const curSeg = `<div class="seg" style="margin-bottom:12px">${[['ars','Pesos'],['usd','Dólares']].map(([k,l]) => `<div class="fit"><button class="${k===ganCur?'b':'s'}" onclick="setGanCur('${k}')">${l}</button></div>`).join('')}</div>`;
+  const curNote = ganCur!=='usd' ? (rate ? 'precio de venta a ' + fmt(rate) + ' por dólar, de hoy, para todos los períodos' : 'cotización no disponible')
+    : hist ? 'cada día a la cotización (venta) de ese día: así los años se pueden comparar'
+    : rate ? 'sin cotización histórica (sin conexión): se usa la de hoy para todos los días, no sirve para comparar años' : 'cotización no disponible: mostrando pesos';
+  $('#app').innerHTML = `<div class="card"><h2>Ganancias</h2>${curSeg}<div class="grid">${cards}</div>
     <p class="mut" style="margin:12px 0 0;font-size:12px">Ganancia = ventas − gastos (todos los egresos). Los movimientos anulados no cuentan.</p>
     <div class="row" style="margin-top:10px;align-items:center"><div class="fit mut" style="font-size:13px">Dólar</div>
     <div class="fit"><select aria-label="Tipo de dólar" onchange="setUsdType(this.value)" style="min-height:36px">${[['oficial','Oficial'],['blue','Blue'],['bolsa','MEP']].map(([v,l]) => `<option value="${v}"${utype===v?' selected':''}>${l}</option>`).join('')}</select></div>
-    <div class="mut" style="font-size:13px">${rate ? 'precio de venta a ' + fmt(rate) + ' por dólar, de hoy, para todos los períodos' : 'cotización no disponible'}</div></div></div>
+    <div class="mut" style="font-size:13px">${curNote}</div></div></div>
     <div class="card"><h2>Evolución</h2><div class="seg">
     ${Object.keys(GK).map(k=>`<div class="fit"><button class="${k===ganKind?'b':'s'}" onclick="ganKind='${k}';vGan()">${{dia:'Días',semana:'Semanas',mes:'Meses',anio:'Años'}[k]}</button></div>`).join('')}</div>
     ${chart}
     <table style="margin-top:14px"><tr><th>Período</th><th class="r">Ventas</th><th class="r">Gastos</th><th class="r">Ganancia</th></tr>
-    ${rows.slice().reverse().map(x=>`<tr><td>${plabel(ganKind,x.a)}</td><td class="r">${fmt(x.r.ing)}</td><td class="r">${fmt(x.r.gas)}</td><td class="r ${x.r.neta<0?'out':'in'}">${fmt(x.r.neta)}</td></tr>`).join('')}</table></div>`;
+    ${rows.slice().reverse().map(x=>`<tr><td>${plabel(ganKind,x.a)}</td><td class="r">${F(V(x.r,'ing'))}</td><td class="r">${F(V(x.r,'gas'))}</td><td class="r ${V(x.r,'neta')<0?'out':'in'}">${F(V(x.r,'neta'))}</td></tr>`).join('')}</table></div>`;
   refreshRate();
 }
 
