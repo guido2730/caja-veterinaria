@@ -938,10 +938,11 @@ const cats = () => [...new Set(S.products.map(p => p.category).filter(Boolean))]
 function vStock(){
   showAllP = false; showAllS = false;
   $('#app').innerHTML = `<div class="card"><h2>Consultar / cargar stock</h2>
-    <div class="row"><div><input id="sq" placeholder="Escaneá un código para consultar o sumar stock…" autocomplete="off"></div>
+    <div class="row"><div><input id="sq" placeholder="Escaneá un código o escribí el nombre del producto…" autocomplete="off"></div>
     <div class="fit"><button class="s" aria-label="Escanear con la cámara" onclick="cameraScan(c=>stockScan(c))"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></button></div>
     <div class="fit"><button class="b" onclick="newProductDlg('')">+ Nuevo</button></div></div>
-    <div class="field" style="margin-top:12px"><label>Al escanear</label><select id="smode"><option value="ver"${!fast&&!useMode?' selected':''}>Consultar precio y stock</option><option value="sumar"${fast?' selected':''}>Sumar 1 unidad (si no existe, abre el alta)</option><option value="usar"${useMode?' selected':''}>Descontar 1 por uso interno</option></select></div>
+    <div id="sugg"></div>
+    <div class="field" style="margin-top:12px"><label>Al escanear un código</label><select id="smode"><option value="ver"${!fast&&!useMode?' selected':''}>Consultar precio y stock</option><option value="sumar"${fast?' selected':''}>Sumar 1 unidad (si no existe, abre el alta)</option><option value="usar"${useMode?' selected':''}>Descontar 1 por uso interno</option></select></div>
     <div class="flash" id="msg"></div>
     <div id="found" style="margin-top:6px"></div></div>
     <div class="card"><h2>Buscar producto o servicio</h2><input id="fl" type="search" placeholder="Nombre, código o categoría" autocomplete="off" style="margin-bottom:10px">
@@ -953,6 +954,7 @@ function vStock(){
 `;
   const q = $('#sq');
   q.addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); const v=q.value.trim(); if(v) stockScan(v); } });
+  q.addEventListener('input', drawSugg);
   $('#smode').addEventListener('change', e => { fast = e.target.value==='sumar'; useMode = e.target.value==='usar'; $('#msg').textContent=''; q.focus(); });
   $('#fl').addEventListener('input', () => { drawList(); drawServices(); });
   $('#csvf').addEventListener('change', e => { if(e.target.files[0]) importCsv(e.target.files[0]); e.target.value=''; });
@@ -964,10 +966,40 @@ function logStock(p, qty, reason, note){
   S.stocklog.push({id:uid(), ts:new Date().toISOString(), productId:p.id, name:pname(p), qty, reason, note:note||'', by:localStorage.getItem('caja_user_email')||''});
   persist('stocklog');
 }
+/* Búsqueda por texto (nombre, presentación, categoría o código; sin tildes ni mayúsculas). Solo muestra y elige: el modo de
+   escaneo (sumar o descontar 1) aplica únicamente a códigos, para no tocar el stock de un producto equivocado al tipear. */
+const fold = t => String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+function stockHits(t){
+  const terms = fold(t).split(/\s+/).filter(Boolean); if(!terms.length) return [];
+  return S.products.filter(p => { const h = fold([p.name, p.presentation, p.category, p.barcode].join(' ')); return terms.every(x => h.includes(x)); })
+    .sort((a, b) => pname(a).localeCompare(pname(b)));
+}
+function drawSugg(){
+  const el = $('#sugg'), q = $('#sq'); if(!el || !q) return;
+  const t = q.value.trim();
+  if(t.length < 2){ el.innerHTML = ''; return; }
+  const h = stockHits(t);
+  el.innerHTML = h.length ? h.slice(0, 8).map(p => `<div class="stat" role="button" tabindex="0" onclick="pickStock('${p.id}')" onkeydown="if(event.key==='Enter')pickStock('${p.id}')" style="cursor:pointer;margin-top:6px"><div class="found"><div><b>${esc(p.name)}</b>${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}<div class="mut">${p.category ? esc(p.category) : 'Sin categoría'}</div></div><div>Stock: <b class="${p.stock<=0?'out':''}">${p.stock}</b></div></div></div>`).join('')
+    + (h.length > 8 ? `<div class="mut" style="margin-top:6px;font-size:13px">y ${h.length - 8} más: seguí escribiendo para acotar.</div>` : '')
+    : '<div class="mut" style="margin-top:8px">Sin coincidencias.</div>';
+}
+function pickStock(id){
+  const p = S.products.find(x => x.id===id); if(!p) return;
+  const q = $('#sq'); if(q) q.value = '';
+  drawSugg(); flash('');
+  stockFound = {code:p.barcode, product:p}; drawFound();
+  const f = $('#found'); if(f && f.scrollIntoView) f.scrollIntoView({block:'nearest'});
+}
 function stockScan(code){
   code = String(code).trim(); if(!code) return;
   const same = S.products.filter(x => x.barcode===code);
-  const q = $('#sq'); if(q) q.value='';
+  if(!same.length && !/^\d+$/.test(code)){
+    const h = stockHits(code);
+    if(h.length === 1){ pickStock(h[0].id); return; }
+    flash(h.length ? 'Hay ' + h.length + ' coincidencias: elegí una de la lista.' : 'No encontré "' + code + '". Probá con otra palabra o cargalo con + Nuevo.', !h.length);
+    drawSugg(); return;
+  }
+  const q = $('#sq'); if(q) q.value=''; drawSugg();
   const quick = (fn) => same.length > 1 ? pickPres(same, 'Elegí la presentación', fn) : fn(same[0]);
   if(useMode){
     if(!same.length){ flash('Ese código no está cargado.', true); return; }
