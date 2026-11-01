@@ -359,8 +359,10 @@ async function refreshUser(){
   if(!sb) return;
   try{ const { data } = await sb.auth.getSession(); user = data.session ? data.session.user : null; if(user) localStorage.setItem('caja_user_email', user.email); }catch(e){}
 }
+let loginNote = '';
 function vLogin(){
-  $('#app').innerHTML = `<div class="panel" style="max-width:380px;margin:30px auto"><h2>Ingresar</h2>
+  const note = loginNote; loginNote = '';
+  $('#app').innerHTML = `<div class="panel" style="max-width:380px;margin:30px auto"><h2>Ingresar</h2>${note ? `<p class="low">${esc(note)}</p>` : ''}
     ${sb ? '' : '<p class="out">No se pudo cargar el acceso. Conectate a internet para iniciar sesión la primera vez.</p>'}
     <div class="field"><label>Email</label><input id="le" type="email" autocomplete="username"></div>
     <div class="field"><label>Contraseña</label><input id="lp" type="password" autocomplete="current-password"></div>
@@ -373,7 +375,7 @@ async function login(){
   if(!navigator.onLine){ $('#lerr').textContent = 'Sin internet: conectate para ingresar.'; return; }
   const { data, error } = await sb.auth.signInWithPassword({email:$('#le').value.trim(), password:$('#lp').value});
   if(error){ $('#lerr').textContent = 'Email o contraseña incorrectos.'; return; }
-  user = data.user; localStorage.setItem('caja_user_email', user.email);
+  user = data.user; localStorage.setItem('caja_user_email', user.email); noteAct();
   render(); sync(true);
 }
 async function logout(){
@@ -390,6 +392,7 @@ async function boot(){
     window.addEventListener('offline', () => setStatus('off'));
     document.addEventListener('visibilitychange', () => { if(!document.hidden && user) sync(true); });
   }
+  startIdle();
   render();
   if(user) sync(true);
 }
@@ -418,6 +421,7 @@ function cycleTheme(){
 /* ===== Navegación ===== */
 $('#nav').addEventListener('click', e => { const b = e.target.closest('button'); if(b){ view = b.dataset.v; render(); } });
 function render(){
+  if(view!=='gan') ganUnlocked = false;
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
   updateBar();
   if(!hasAccess()){ vLogin(); return; }
@@ -532,7 +536,7 @@ function vCaja(){
     $('#app').innerHTML = `<div class="card"><h2>Caja cerrada</h2>
       <p class="mut">Abrí la caja con el efectivo inicial para poder registrar ventas y egresos.</p>
       <div class="row"><div><label>Efectivo inicial</label><input id="op" inputmode="decimal" value="${last?last.counted:0}"></div>
-      <div class="fit"><button class="b" onclick="openCaja()">Abrir caja</button></div></div></div>` + closedList() + cuentasCard() + backupCard();
+      <div class="fit"><button class="b" onclick="openCaja()">Abrir caja</button></div></div></div>` + closedList() + cuentasCard() + seguridadCard() + backupCard();
     return;
   }
   const r = summary(s);
@@ -551,7 +555,7 @@ function vCaja(){
     <div class="fit"><button class="s" onclick="aporteDlg()">Agregar efectivo</button></div>
     <div class="fit"><button class="s" onclick="retiroDlg()">Retirar efectivo</button></div>
     <div class="fit"><button class="b" onclick="cerrarDlg()">Cerrar caja</button></div></div></div>
-    <div class="card"><h2>Movimientos del turno</h2>${movTable(r.ms.slice().reverse())}</div>` + closedList() + cuentasCard() + backupCard();
+    <div class="card"><h2>Movimientos del turno</h2>${movTable(r.ms.slice().reverse())}</div>` + closedList() + cuentasCard() + seguridadCard() + backupCard();
 }
 function closedList(){
   const c = S.sessions.filter(x=>x.closedAt).slice(-5).reverse();
@@ -1272,6 +1276,7 @@ const plabel = (k, a) => k==='dia' ? a.toLocaleDateString('es-AR',{day:'2-digit'
   : k==='semana' ? 'sem '+a.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'})
   : k==='mes' ? a.toLocaleDateString('es-AR',{month:'short',year:'2-digit'}) : String(a.getFullYear());
 function vGan(){
+  if(pinSet() && !ganUnlocked){ vPinGate(); return; }
   const rate = getSet().usdRate, utype = getSet().usdType;
   const hist = !!usdHistGet(utype), usd = ganCur==='usd' && !!(hist || rate), rf = rateFn();
   if(ganCur==='usd') fetchUsdHist(utype);
@@ -1353,6 +1358,116 @@ function brkCard(usd, rf, F){
     <p class="mut" style="margin:12px 0 0;font-size:12px">El efectivo no tiene cuenta. Los movimientos anulados y los retiros o aportes de efectivo no cuentan.</p></div>`;
 }
 
+/* ===== SEGURIDAD =====
+   1) Cierre de sesión por inactividad (5, 10, 15 o 30 min, por dispositivo; por defecto 10). Sin internet NO se cierra: la sesión
+      no se podría volver a abrir y la caja quedaría trabada; se cierra apenas vuelve la conexión.
+   2) Clave de 4 dígitos para Ganancias. Se guarda con hash en los ajustes (se comparte entre dispositivos). Frena a quien use la
+      app en el mostrador; no cifra los datos del dispositivo. Tras 3 fallos espera 30 s, y el tiempo se duplica en cada ronda. */
+let ganUnlocked = false, lastAct = Date.now(), lastSave = 0;
+const idleMin = () => { try{ const v = +localStorage.getItem('caja_idle_min'); return [5,10,15,30].includes(v) ? v : 10; }catch{ return 10; } };
+function noteAct(){
+  lastAct = Date.now();
+  if(lastAct - lastSave > 5000){ lastSave = lastAct; try{ localStorage.setItem('caja_last_act', String(lastAct)); }catch(e){} }
+  const w = $('#idlew'); if(w) w.remove();
+}
+function idleCheck(){
+  if(!user) return;
+  const idle = Date.now() - lastAct, left = idleMin()*60e3 - idle;
+  if(ganUnlocked && idle > 120e3){ ganUnlocked = false; if(view==='gan') render(); }
+  if(left <= 0){ if(navigator.onLine) autoLogout(); return; }
+  if(left <= 30e3 && !dlg.open){
+    let w = $('#idlew');
+    if(!w){ w = document.createElement('div'); w.id = 'idlew'; w.className = 'monob hi'; w.style.cssText = 'position:fixed;left:16px;right:16px;bottom:84px;z-index:60;background:var(--card);margin:0';
+      document.body.appendChild(w); }
+    w.innerHTML = `Se cierra la sesión por inactividad en <b>${Math.ceil(left/1000)} s</b>. <button class="s" onclick="noteAct()">Seguir acá</button>`;
+  }
+}
+async function autoLogout(){
+  const w = $('#idlew'); if(w) w.remove();
+  ganUnlocked = false;
+  try{ if(dlg.open) closeModal(); }catch(e){}
+  try{ if(sb) await sb.auth.signOut(); }catch(e){}
+  user = null; localStorage.removeItem('caja_user_email'); localStorage.removeItem('caja_last_act');
+  loginNote = 'Se cerró la sesión por inactividad. Ingresá de nuevo.'; render();
+}
+function startIdle(){
+  const stored = +localStorage.getItem('caja_last_act') || 0;
+  lastAct = stored || Date.now();   // si la app estuvo cerrada más que el límite, al abrirla se cierra la sesión
+  ['pointerdown','keydown','touchstart','wheel','scroll'].forEach(ev => window.addEventListener(ev, noteAct, {passive:true, capture:true}));
+  document.addEventListener('visibilitychange', () => { if(!document.hidden) idleCheck(); });
+  window.addEventListener('online', idleCheck); window.addEventListener('focus', idleCheck);
+  setInterval(idleCheck, 5000); idleCheck();
+}
+function setIdleMin(v){ try{ localStorage.setItem('caja_idle_min', String(+v)); }catch(e){} noteAct(); }
+
+const pinSet = () => !!getSet().pinHash;
+async function pinHashOf(pin, salt){
+  const enc = new TextEncoder(), k = await crypto.subtle.importKey('raw', enc.encode(pin), 'PBKDF2', false, ['deriveBits']);
+  const b = await crypto.subtle.deriveBits({name:'PBKDF2', hash:'SHA-256', salt:enc.encode(salt), iterations:100000}, k, 256);
+  return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2,'0')).join('');
+}
+const pinFail = () => { try{ return JSON.parse(localStorage.getItem('caja_pin_fail')) || {n:0}; }catch{ return {n:0}; } };
+const pinWait = () => Math.max(0, Math.ceil(((pinFail().until||0) - Date.now()) / 1000));
+function pinBad(){
+  const f = pinFail(); f.n = (f.n||0) + 1;
+  if(f.n % 3 === 0) f.until = Date.now() + Math.min(900, 30 * 2**(f.n/3 - 1)) * 1000;
+  try{ localStorage.setItem('caja_pin_fail', JSON.stringify(f)); }catch(e){}
+}
+async function pinOk(pin){
+  const st = getSet();
+  if(!/^\d{4}$/.test(pin) || !crypto.subtle) return false;
+  const ok = (await pinHashOf(pin, st.pinSalt||'')) === st.pinHash;
+  if(ok){ try{ localStorage.removeItem('caja_pin_fail'); }catch(e){} } else pinBad();
+  return ok;
+}
+function vPinGate(){
+  $('#app').innerHTML = `<div class="panel" style="max-width:340px;margin:30px auto;text-align:center"><h2>Ganancias</h2>
+    <p class="mut">Ingresá tu clave de 4 dígitos.</p>
+    <input id="pg" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" aria-label="Clave de 4 dígitos" style="text-align:center;font-size:28px;letter-spacing:.5em;max-width:200px" oninput="pinGateInput(this)">
+    <div id="pgerr" class="out field" style="min-height:22px"></div></div>`;
+  const i = $('#pg'); if(i){ i.focus(); } pinWaitMsg();
+}
+function pinWaitMsg(){ const w = pinWait(), e = $('#pgerr'); if(!e) return false; if(w){ e.textContent = 'Demasiados intentos. Esperá ' + w + ' s.'; setTimeout(pinWaitMsg, 1000); } else if(/Esperá/.test(e.textContent)) e.textContent = ''; return w > 0; }
+async function pinGateInput(el){
+  el.value = el.value.replace(/\D/g,'').slice(0,4);
+  if(el.value.length < 4) return;
+  if(pinWaitMsg()){ el.value = ''; return; }
+  const pin = el.value; el.value = '';
+  if(await pinOk(pin)){ ganUnlocked = true; vGan(); }
+  else if(!pinWaitMsg()){ const e = $('#pgerr'); if(e) e.textContent = 'Clave incorrecta.'; }
+}
+function seguridadCard(){
+  const has = pinSet(), m = idleMin();
+  const inp = (id, l) => `<div><label>${l}</label><input id="${id}" type="password" inputmode="numeric" maxlength="4" autocomplete="off" oninput="this.value=this.value.replace(/\\D/g,'')"></div>`;
+  return `<div class="card"><h2>Seguridad</h2>
+    <div class="field"><label>Cerrar sesión por inactividad (en este dispositivo)</label>
+      <select onchange="setIdleMin(this.value)">${[5,10,15,30].map(v => `<option value="${v}"${v===m?' selected':''}>${v} minutos</option>`).join('')}</select>
+      <div class="mut" style="font-size:12px;margin-top:4px">Sin internet no se cierra sola: se cierra al volver la conexión.</div></div>
+    <div class="field"><label>Clave de Ganancias (4 dígitos)</label>
+      <div class="row">${has ? inp('pk0','Clave actual') : ''}${inp('pk1', has ? 'Nueva clave' : 'Clave')}${inp('pk2','Repetir')}</div>
+      <div class="row" style="margin-top:8px"><div class="fit"><button class="b" onclick="savePin()">${has ? 'Cambiar clave' : 'Guardar clave'}</button></div>
+      ${has ? '<div class="fit"><button class="d" onclick="delPin()">Quitar clave</button></div>' : ''}</div>
+      <div id="pkmsg" class="mut" style="font-size:13px;margin-top:6px">${has ? 'La clave está activa: Ganancias la pide cada vez que entrás.' : 'Sin clave: cualquiera con la sesión abierta ve Ganancias.'}</div></div></div>`;
+}
+const pkMsg = (t, bad) => { const e = $('#pkmsg'); if(e){ e.textContent = t; e.className = bad ? 'out' : 'in'; } };
+async function savePin(){
+  const has = pinSet(), a = $('#pk1').value, b = $('#pk2').value;
+  if(!crypto.subtle){ pkMsg('Este navegador no permite guardar la clave (hace falta https).', true); return; }
+  if(!/^\d{4}$/.test(a)){ pkMsg('La clave tiene que ser de 4 números.', true); return; }
+  if(a !== b){ pkMsg('Las dos claves no coinciden.', true); return; }
+  if(has){
+    if(pinWait()){ pkMsg('Demasiados intentos. Esperá ' + pinWait() + ' s.', true); return; }
+    if(!(await pinOk($('#pk0').value))){ pkMsg('La clave actual no es correcta.', true); return; }
+  }
+  const salt = [...crypto.getRandomValues(new Uint8Array(16))].map(x => x.toString(16).padStart(2,'0')).join('');
+  saveSettings({pinSalt:salt, pinHash:await pinHashOf(a, salt)}); ganUnlocked = false; render(); pkMsg('Clave guardada.');
+}
+async function delPin(){
+  if(pinWait()){ pkMsg('Demasiados intentos. Esperá ' + pinWait() + ' s.', true); return; }
+  if(!(await pinOk($('#pk0').value))){ pkMsg('Para quitarla, escribí la clave actual.', true); return; }
+  saveSettings({pinSalt:'', pinHash:''}); render(); pkMsg('Clave quitada.');
+}
+
 /* ===== MONOTRIBUTO =====
    El tope de ARCA es anual y se mide sobre los últimos 12 meses (este mes y los 11 anteriores). Dividido por 12 da un ritmo
    mensual de referencia, pero el límite real es el acumulado de 12 meses. Se cuentan los cobros con cuenta de cada persona
@@ -1386,9 +1501,10 @@ function monoBanner(){
   if(!S.movements.length) return '';
   const ack = monoAckGet(), items = monoData().rows.filter(r => r.lim && monoLvl(r) > (ack[monoKey(r)] || 0));
   if(!items.length) return '';
-  const hi = items.some(r => r.level >= 2);
+  const hi = items.some(r => r.level >= 2), hide = pinSet() && !ganUnlocked;
   return `<div class="monob${hi?' hi':''}" role="alert"><b>Monotributo</b>${items.map(r => {
     const who = esc(accLabel(r.k)) + ' (cat. ' + esc(r.cat) + ')';
+    if(hide) return `<p>${who}: ${r.level >= 3 ? '<b>superaste el tope anual</b>' : r.level >= 1 ? 'te estás acercando al tope anual' : 'este mes va por encima del ritmo mensual'}. El detalle está en Ganancias.</p>`;
     return r.level >= 3 ? `<p>${who}: <b>superaste el tope</b>. Llevás ${fmt(r.tot)} de ${fmt(r.lim)} en los últimos 12 meses (${Math.round(r.pct)}%).</p>`
       : r.level >= 1 ? `<p>${who}: llevás ${fmt(r.tot)} de ${fmt(r.lim)} en los últimos 12 meses (<b>${Math.round(r.pct)}%</b>). Te quedan ${fmt(r.left)}.</p>`
       : `<p>${who}: este mes ya cobraste ${fmt(r.cur)}, más que el ritmo mensual de ${fmt(r.pace)} (tope anual ÷ 12). Es solo un aviso de ritmo; el tope real es el de 12 meses (${Math.round(r.pct)}% usado).</p>`;
