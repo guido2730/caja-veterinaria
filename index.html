@@ -36,6 +36,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px so
 #stat{margin-left:auto;font-size:13px}
 nav{display:flex;gap:2px;margin-left:8px}
 nav button{position:relative;display:flex;align-items:center;gap:8px;padding:9px 13px;border:0;border-radius:10px;background:none;color:var(--mut);font:600 15px var(--body);cursor:pointer}
+nav .sm{display:none}
 nav button svg{display:none;width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 nav button:hover{color:var(--tx)}
 nav button.on{color:var(--tx)}
@@ -169,6 +170,7 @@ details{margin-bottom:12px}summary{cursor:pointer;color:var(--ac);font-weight:65
   nav{position:fixed;left:0;right:0;bottom:0;z-index:6;margin:0;justify-content:space-around;background:var(--card);border-top:1px solid var(--bd);padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
   nav button{flex:1;flex-direction:column;gap:2px;padding:6px 2px;font-size:11.5px}
   nav button svg{display:block}
+  nav .lg{display:none}nav .sm{display:inline}
   nav button.on{color:var(--ac)}
   nav button.on::after{left:50%;right:auto;width:28px;margin-left:-14px;top:-6px;bottom:auto;border-radius:0 0 3px 3px}
   .hide-s{display:none}
@@ -191,6 +193,7 @@ details{margin-bottom:12px}summary{cursor:pointer;color:var(--ac);font-weight:65
     <button data-v="stock"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 4v10l-8 4-8-4V7z"/><path d="M4 7l8 4 8-4M12 11v10"/></svg><span>Stock</span></button>
     <button data-v="gan"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 15l3-4 3 2 5-6"/></svg><span>Ganancias</span></button>
     <button data-v="hist"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg><span>Historial</span></button>
+    <button data-v="config"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span class="lg">Configuración</span><span class="sm">Config.</span></button>
   </nav>
   <span id="stat" class="mut"></span>
   <button id="themeBtn" class="themebtn" onclick="cycleTheme()"></button>
@@ -437,11 +440,11 @@ function cycleTheme(){
 /* ===== Navegación ===== */
 $('#nav').addEventListener('click', e => { const b = e.target.closest('button'); if(b){ view = b.dataset.v; render(); } });
 function render(){
-  if(view!=='gan' && view!=='hist') ganUnlocked = false;
+  if(!PROT.includes(view)) ganUnlocked = false;
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
   updateBar();
   if(!hasAccess()){ vLogin(); return; }
-  ({caja:vCaja, vender:vVender, stock:vStock, gan:vGan, hist:vHist})[view]();
+  ({caja:vCaja, vender:vVender, stock:vStock, gan:vGan, hist:vHist, config:vConfig})[view]();
   const bn = monoBanner(); if(bn && $('#app')) $('#app').insertAdjacentHTML('afterbegin', bn);
 }
 
@@ -464,7 +467,7 @@ async function backupTo(){
     }
   }catch(e){}
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([snapshot()],{type:'application/json'})); a.download = name; a.click();
-  return `Respaldo descargado: ${name}. Elegí una carpeta de Drive en la pestaña Caja para que se guarde sola.`;
+  return `Respaldo descargado: ${name}. Elegí una carpeta de Drive en Configuración para que se guarde sola.`;
 }
 async function pickBackupFolder(){
   if(!window.showDirectoryPicker){ alert('Elegir carpeta funciona en Chrome o Edge. En otros navegadores el respaldo se descarga.'); return; }
@@ -553,7 +556,7 @@ function vCaja(){
     $('#app').innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:14px"><h2 style="margin:0">Caja cerrada</h2>${eyeBtn()}</div>
       <p class="mut">Abrí la caja con el efectivo inicial para poder registrar ventas y egresos.</p>
       <div class="row"><div><label>Efectivo inicial</label><input id="op" inputmode="decimal" value="${last?last.counted:0}"></div>
-      <div class="fit"><button class="b" onclick="openCaja()">Abrir caja</button></div></div></div>` + closedList() + cuentasCard() + seguridadCard() + backupCard();
+      <div class="fit"><button class="b" onclick="openCaja()">Abrir caja</button></div></div></div>` + closedList();
     return;
   }
   const r = summary(s);
@@ -572,7 +575,11 @@ function vCaja(){
     <div class="fit"><button class="s" onclick="aporteDlg()">Agregar efectivo</button></div>
     <div class="fit"><button class="s" onclick="retiroDlg()">Retirar efectivo</button></div>
     <div class="fit"><button class="b" onclick="cerrarDlg()">Cerrar caja</button></div></div></div>
-    <div class="card"><h2>Movimientos del turno</h2>${movTable(r.ms.slice().reverse())}</div>` + closedList() + cuentasCard() + seguridadCard() + backupCard();
+    <div class="card"><h2>Movimientos del turno</h2>${movTable(r.ms.slice().reverse())}</div>` + closedList();
+}
+function vConfig(){
+  if(!ganUnlocked){ vPinGate(); return; }
+  $('#app').innerHTML = cuentasCard() + seguridadCard() + backupCard();
 }
 function closedList(){
   const c = S.sessions.filter(x=>x.closedAt).slice(-5).reverse();
@@ -1518,6 +1525,7 @@ function brkCard(usd, rf, F){
       no se podría volver a abrir y la caja quedaría trabada; se cierra apenas vuelve la conexión.
    2) Clave de 4 dígitos para Ganancias. Se guarda con hash en los ajustes (se comparte entre dispositivos). Frena a quien use la
       app en el mostrador; no cifra los datos del dispositivo. Tras 3 fallos espera 30 s, y el tiempo se duplica en cada ronda. */
+const PROT = ['gan', 'hist', 'config'];   // pestañas protegidas con la misma clave de 4 dígitos
 let ganUnlocked = false, lastAct = Date.now(), lastSave = 0;
 const idleMin = () => { try{ const v = +localStorage.getItem('caja_idle_min'); return [5,10,15,30].includes(v) ? v : 10; }catch{ return 10; } };
 function noteAct(){
@@ -1528,7 +1536,7 @@ function noteAct(){
 function idleCheck(){
   if(!user) return;
   const idle = Date.now() - lastAct, left = idleMin()*60e3 - idle;
-  if(ganUnlocked && idle > 120e3){ ganUnlocked = false; if(view==='gan' || view==='hist') render(); }
+  if(ganUnlocked && idle > 120e3){ ganUnlocked = false; if(PROT.includes(view)) render(); }
   if(left <= 0){ if(navigator.onLine) autoLogout(); return; }
   if(left <= 30e3 && !dlg.open){
     let w = $('#idlew');
@@ -1576,10 +1584,10 @@ async function pinOk(pin){
   return ok;
 }
 function vPinGate(){
-  const what = view==='hist' ? 'Historial' : 'Ganancias';
+  const what = view==='hist' ? 'Historial' : view==='config' ? 'Configuración' : 'Ganancias';
   if(!pinSet()){
     $('#app').innerHTML = `<div class="panel" style="max-width:340px;margin:30px auto;text-align:center"><h2>${what}</h2>
-      <p class="mut">Ganancias e Historial están protegidos con la misma clave. Creá una de 4 números: la vas a pedir cada vez que entres.</p>
+      <p class="mut">Ganancias, Historial y Configuración están protegidos con la misma clave. Creá una de 4 números: la vas a pedir cada vez que entres.</p>
       <div class="field"><input id="pn1" type="password" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="Clave" aria-label="Clave de 4 dígitos" style="text-align:center;font-size:24px;letter-spacing:.4em;max-width:200px" oninput="this.value=this.value.replace(/\\D/g,'')"></div>
       <div class="field"><input id="pn2" type="password" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="Repetir" aria-label="Repetir la clave" style="text-align:center;font-size:24px;letter-spacing:.4em;max-width:200px" oninput="this.value=this.value.replace(/\\D/g,'')"></div>
       <div id="pgerr" class="out field" style="min-height:22px"></div>
@@ -1617,11 +1625,11 @@ function seguridadCard(){
     <div class="field"><label>Cerrar sesión por inactividad (en este dispositivo)</label>
       <select onchange="setIdleMin(this.value)">${[5,10,15,30].map(v => `<option value="${v}"${v===m?' selected':''}>${v} minutos</option>`).join('')}</select>
       <div class="mut" style="font-size:12px;margin-top:4px">Sin internet no se cierra sola: se cierra al volver la conexión.</div></div>
-    <div class="field"><label>Clave de Ganancias e Historial (4 dígitos)</label>
+    <div class="field"><label>Clave de Ganancias, Historial y Configuración (4 dígitos)</label>
       <div class="row">${has ? inp('pk0','Clave actual') : ''}${inp('pk1', has ? 'Nueva clave' : 'Clave')}${inp('pk2','Repetir')}</div>
       <div class="row" style="margin-top:8px"><div class="fit"><button class="b" onclick="savePin()">${has ? 'Cambiar clave' : 'Guardar clave'}</button></div>
       </div>
-      <div id="pkmsg" class="mut" style="font-size:13px;margin-top:6px">${has ? 'La clave está activa: Ganancias e Historial la piden cada vez que entrás.' : 'Todavía no hay clave: Ganancias e Historial quedan bloqueados hasta que la crees (acá o la primera vez que entres).'}</div></div></div>`;
+      <div id="pkmsg" class="mut" style="font-size:13px;margin-top:6px">${has ? 'La clave está activa: Ganancias, Historial y Configuración la piden cada vez que entrás.' : 'Todavía no hay clave: Ganancias, Historial y Configuración quedan bloqueados hasta que la crees (la primera vez que entres).'}</div></div></div>`;
 }
 const pkMsg = (t, bad) => { const e = $('#pkmsg'); if(e){ e.textContent = t; e.className = bad ? 'out' : 'in'; } };
 async function savePin(){
@@ -1634,7 +1642,7 @@ async function savePin(){
     if(!(await pinOk($('#pk0').value))){ pkMsg('La clave actual no es correcta.', true); return; }
   }
   const salt = [...crypto.getRandomValues(new Uint8Array(16))].map(x => x.toString(16).padStart(2,'0')).join('');
-  saveSettings({pinSalt:salt, pinHash:await pinHashOf(a, salt)}); ganUnlocked = false; render(); pkMsg('Clave guardada.');
+  saveSettings({pinSalt:salt, pinHash:await pinHashOf(a, salt)}); render(); pkMsg('Clave guardada.');
 }
 
 /* ===== MONOTRIBUTO =====
