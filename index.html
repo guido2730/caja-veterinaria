@@ -437,7 +437,7 @@ function cycleTheme(){
 /* ===== Navegación ===== */
 $('#nav').addEventListener('click', e => { const b = e.target.closest('button'); if(b){ view = b.dataset.v; render(); } });
 function render(){
-  if(view!=='gan') ganUnlocked = false;
+  if(view!=='gan' && view!=='hist') ganUnlocked = false;
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === view));
   updateBar();
   if(!hasAccess()){ vLogin(); return; }
@@ -1528,7 +1528,7 @@ function noteAct(){
 function idleCheck(){
   if(!user) return;
   const idle = Date.now() - lastAct, left = idleMin()*60e3 - idle;
-  if(ganUnlocked && idle > 120e3){ ganUnlocked = false; if(view==='gan') render(); }
+  if(ganUnlocked && idle > 120e3){ ganUnlocked = false; if(view==='gan' || view==='hist') render(); }
   if(left <= 0){ if(navigator.onLine) autoLogout(); return; }
   if(left <= 30e3 && !dlg.open){
     let w = $('#idlew');
@@ -1576,16 +1576,17 @@ async function pinOk(pin){
   return ok;
 }
 function vPinGate(){
+  const what = view==='hist' ? 'Historial' : 'Ganancias';
   if(!pinSet()){
-    $('#app').innerHTML = `<div class="panel" style="max-width:340px;margin:30px auto;text-align:center"><h2>Ganancias</h2>
-      <p class="mut">Ganancias está protegido. Creá una clave de 4 números: la vas a pedir cada vez que entres.</p>
+    $('#app').innerHTML = `<div class="panel" style="max-width:340px;margin:30px auto;text-align:center"><h2>${what}</h2>
+      <p class="mut">Ganancias e Historial están protegidos con la misma clave. Creá una de 4 números: la vas a pedir cada vez que entres.</p>
       <div class="field"><input id="pn1" type="password" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="Clave" aria-label="Clave de 4 dígitos" style="text-align:center;font-size:24px;letter-spacing:.4em;max-width:200px" oninput="this.value=this.value.replace(/\\D/g,'')"></div>
       <div class="field"><input id="pn2" type="password" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="Repetir" aria-label="Repetir la clave" style="text-align:center;font-size:24px;letter-spacing:.4em;max-width:200px" oninput="this.value=this.value.replace(/\\D/g,'')"></div>
       <div id="pgerr" class="out field" style="min-height:22px"></div>
       <button class="b" onclick="createPin()">Guardar y entrar</button></div>`;
     const i = $('#pn1'); if(i) i.focus(); return;
   }
-  $('#app').innerHTML = `<div class="panel" style="max-width:340px;margin:30px auto;text-align:center"><h2>Ganancias</h2>
+  $('#app').innerHTML = `<div class="panel" style="max-width:340px;margin:30px auto;text-align:center"><h2>${what}</h2>
     <p class="mut">Ingresá tu clave de 4 dígitos.</p>
     <input id="pg" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" aria-label="Clave de 4 dígitos" style="text-align:center;font-size:28px;letter-spacing:.5em;max-width:200px" oninput="pinGateInput(this)">
     <div id="pgerr" class="out field" style="min-height:22px"></div></div>`;
@@ -1598,7 +1599,7 @@ async function createPin(){
   if(a !== b){ say('Las dos claves no coinciden.'); return; }
   const salt = [...crypto.getRandomValues(new Uint8Array(16))].map(x => x.toString(16).padStart(2,'0')).join('');
   saveSettings({pinSalt:salt, pinHash:await pinHashOf(a, salt)});
-  ganUnlocked = true; vGan();
+  ganUnlocked = true; render();
 }
 function pinWaitMsg(){ const w = pinWait(), e = $('#pgerr'); if(!e) return false; if(w){ e.textContent = 'Demasiados intentos. Esperá ' + w + ' s.'; setTimeout(pinWaitMsg, 1000); } else if(/Esperá/.test(e.textContent)) e.textContent = ''; return w > 0; }
 async function pinGateInput(el){
@@ -1606,7 +1607,7 @@ async function pinGateInput(el){
   if(el.value.length < 4) return;
   if(pinWaitMsg()){ el.value = ''; return; }
   const pin = el.value; el.value = '';
-  if(await pinOk(pin)){ ganUnlocked = true; vGan(); }
+  if(await pinOk(pin)){ ganUnlocked = true; render(); }
   else if(!pinWaitMsg()){ const e = $('#pgerr'); if(e) e.textContent = 'Clave incorrecta.'; }
 }
 function seguridadCard(){
@@ -1616,11 +1617,11 @@ function seguridadCard(){
     <div class="field"><label>Cerrar sesión por inactividad (en este dispositivo)</label>
       <select onchange="setIdleMin(this.value)">${[5,10,15,30].map(v => `<option value="${v}"${v===m?' selected':''}>${v} minutos</option>`).join('')}</select>
       <div class="mut" style="font-size:12px;margin-top:4px">Sin internet no se cierra sola: se cierra al volver la conexión.</div></div>
-    <div class="field"><label>Clave de Ganancias (4 dígitos)</label>
+    <div class="field"><label>Clave de Ganancias e Historial (4 dígitos)</label>
       <div class="row">${has ? inp('pk0','Clave actual') : ''}${inp('pk1', has ? 'Nueva clave' : 'Clave')}${inp('pk2','Repetir')}</div>
       <div class="row" style="margin-top:8px"><div class="fit"><button class="b" onclick="savePin()">${has ? 'Cambiar clave' : 'Guardar clave'}</button></div>
       </div>
-      <div id="pkmsg" class="mut" style="font-size:13px;margin-top:6px">${has ? 'La clave está activa: Ganancias la pide cada vez que entrás.' : 'Todavía no hay clave: Ganancias queda bloqueado hasta que la crees (acá o la primera vez que entres).'}</div></div></div>`;
+      <div id="pkmsg" class="mut" style="font-size:13px;margin-top:6px">${has ? 'La clave está activa: Ganancias e Historial la piden cada vez que entrás.' : 'Todavía no hay clave: Ganancias e Historial quedan bloqueados hasta que la crees (acá o la primera vez que entres).'}</div></div></div>`;
 }
 const pkMsg = (t, bad) => { const e = $('#pkmsg'); if(e){ e.textContent = t; e.className = bad ? 'out' : 'in'; } };
 async function savePin(){
@@ -1725,6 +1726,7 @@ function monoCard(){
 /* ===== HISTORIAL ===== */
 let histDay = today(), histPending = false;
 function vHist(){
+  if(!ganUnlocked){ vPinGate(); return; }
   const dayMs = S.movements.filter(m => dayOf(m.ts)===histDay);
   const ms = (histPending ? S.movements.filter(isPending) : dayMs).slice().reverse();
   const live = dayMs.filter(m => !m.voided);
