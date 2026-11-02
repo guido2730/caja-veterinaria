@@ -353,6 +353,7 @@ async function sync(pull){
     if(pull) await pullAll();
     setStatus('ok');
     if(pull && JSON.stringify(COLS.map(k => S[k])) !== before && !dlg.open) render();
+    photoSync();
   }catch(e){ console.error(e); setStatus('err'); }
   syncing = false;
   if(again){ again = false; scheduleSync(); }
@@ -939,15 +940,18 @@ function cobrar(){
 }
 
 /* ===== FOTOS DE PRODUCTOS =====
-   Opcionales. Se guardan en IndexedDB de ESTE dispositivo (no dentro del producto): localStorage tiene un tope de ~5 MB y, si se
-   llenara, dejaría de guardar ventas. Se reducen a 400 px (JPEG) para que pesen ~20-40 KB. Por ahora no se sincronizan entre dispositivos. */
-const fotos = {};
+   Opcionales. La imagen se guarda en IndexedDB del dispositivo (no dentro del producto): localStorage tiene un tope de ~5 MB y, si se
+   llenara, dejaría de guardar ventas. Se reducen a 400 px (JPEG) para que pesen ~20-40 KB. El producto solo lleva `foto` = fecha de la
+   última foto, que viaja con la sincronización normal; la imagen sube y baja aparte, por la tabla `photos` de Supabase (supabase/schema.sql). */
+const fotos = {}, fotoMeta = {};   // fotos[id] = imagen; fotoMeta[id] = {ts, up} (up: ya está en Supabase)
+const fotoOf = p => p && p.foto ? fotos[p.id] : '';
 let pendFoto, fotoFor = null;   // pendFoto: undefined = sin cambios, texto = foto nueva, null = quitar
 async function loadFotos(){
   try{
     const db = await idbOpen();
     await new Promise(res => { const rq = db.transaction('kv').objectStore('kv').openCursor();
-      rq.onsuccess = () => { const c = rq.result; if(!c){ res(); return; } if(String(c.key).startsWith('foto:')) fotos[String(c.key).slice(5)] = c.value; c.continue(); };
+      rq.onsuccess = () => { const c = rq.result; if(!c){ res(); return; } if(String(c.key).startsWith('foto:')){ const id = String(c.key).slice(5), v = c.value; const o = typeof v === 'string' ? {img:v, ts:0, up:false} : v;
+        if(o && o.img){ fotos[id] = o.img; fotoMeta[id] = {ts:o.ts||0, up:!!o.up}; } } c.continue(); };
       rq.onerror = () => res(); });
   }catch(e){}
 }
@@ -964,8 +968,8 @@ function fotoFromFile(file){
     img.src = url;
   });
 }
-const withFoto = (p, inner, big) => fotos[p.id] ? `<div style="display:flex;gap:10px;align-items:center;min-width:0"><img class="pth" src="${fotos[p.id]}" alt=""${big ? ` onclick="fotoBig('${p.id}')" style="cursor:zoom-in"` : ''}>${inner}</div>` : inner;
-function fotoBig(id){ const p = S.products.find(x => x.id===id); if(!p || !fotos[id]) return;
+const withFoto = (p, inner, big) => fotoOf(p) ? `<div style="display:flex;gap:10px;align-items:center;min-width:0"><img class="pth" src="${fotos[p.id]}" alt=""${big ? ` onclick="fotoBig('${p.id}')" style="cursor:zoom-in"` : ''}>${inner}</div>` : inner;
+function fotoBig(id){ const p = S.products.find(x => x.id===id); if(!p || !fotoOf(p)) return;
   modal(`<h2>${esc(pname(p))}</h2><img src="${fotos[id]}" alt="" style="width:100%;border-radius:10px"><div class="row" style="margin-top:12px"><div><button class="s" style="width:100%" onclick="closeModal()">Cerrar</button></div></div>`); }
 function fotoField(p){
   fotoFor = p && p.id || null; pendFoto = undefined;
@@ -975,7 +979,7 @@ function fotoField(p){
     <div class="fit" id="fdel"${fotoCur() ? '' : ' hidden'}><button class="d" type="button" onclick="quitFoto()">Quitar</button></div></div>
     <input type="file" id="fcam" accept="image/*" capture="environment" hidden onchange="pickFoto(this)"><input type="file" id="fgal" accept="image/*" hidden onchange="pickFoto(this)"></div>`;
 }
-const fotoCur = () => pendFoto === undefined ? (fotoFor ? fotos[fotoFor] : '') : pendFoto;
+const fotoCur = () => pendFoto === undefined ? (fotoFor ? fotoOf(S.products.find(x => x.id===fotoFor)) : '') : pendFoto;
 const fotoBoxHtml = () => fotoCur() ? `<img src="${fotoCur()}" alt="">` : 'Sin foto';
 function fotoRedraw(){ const b = $('#fbox'), d = $('#fdel'); if(b) b.innerHTML = fotoBoxHtml(); if(d) d.hidden = !fotoCur(); }
 async function pickFoto(inp){
@@ -986,8 +990,57 @@ function quitFoto(){ pendFoto = null; fotoRedraw(); }
 function saveFoto(pid){
   if(pendFoto === undefined) return;
   const v = pendFoto; pendFoto = undefined;
-  if(v){ fotos[pid] = v; idbSet('foto:' + pid, v).catch(() => alert('La foto se ve ahora, pero no se pudo guardar en este dispositivo.')); }
-  else { delete fotos[pid]; idbDel('foto:' + pid).catch(() => {}); }
+  const pr = S.products.find(x => x.id===pid);
+  if(v){
+    const ts = Date.now(); fotos[pid] = v; fotoMeta[pid] = {ts, up:false}; if(pr) pr.foto = ts;
+    idbSet('foto:' + pid, {img:v, ts, up:false}).catch(() => alert('La foto se ve ahora, pero no se pudo guardar en este dispositivo.'));
+  } else { fotoGone(pid, !!(pr && pr.foto)); if(pr) delete pr.foto; }
+}
+// Quita la foto de este dispositivo y deja anotado borrarla también de Supabase cuando haya conexión.
+function fotoGone(pid, force){
+  const had = !!fotoMeta[pid] || force;
+  delete fotos[pid]; delete fotoMeta[pid]; idbDel('foto:' + pid).catch(() => {});
+  if(!had) return;
+  try{ const q = JSON.parse(localStorage.getItem('caja_foto_del')) || []; if(!q.includes(pid)) q.push(pid); localStorage.setItem('caja_foto_del', JSON.stringify(q)); }catch(e){}
+}
+function fotosRedraw(){
+  if(dlg.open) return;
+  if(view==='stock'){ drawFound(); drawList(); drawSugg(); }
+  else if(view==='vender'){ const q = $('#q'); if(q) suggest(q.value); }
+}
+let fsyncing = false, fotoTableMissing = false;
+async function photoSync(){
+  if(!sb || !user || !navigator.onLine || fsyncing || fotoTableMissing) return;
+  fsyncing = true;
+  try{
+    let del = []; try{ del = JSON.parse(localStorage.getItem('caja_foto_del')) || []; }catch(e){}
+    if(del.length){ const { error } = await sb.from('photos').delete().in('id', del); if(error) throw error; localStorage.removeItem('caja_foto_del'); }
+    const conFoto = S.products.filter(p => p.foto);
+    // subir las que solo están en este dispositivo
+    for(const p of conFoto){
+      const m = fotoMeta[p.id]; if(!m || m.up || m.ts < p.foto || !fotos[p.id]) continue;
+      const { error } = await sb.from('photos').upsert({id:p.id, data:{img:fotos[p.id], ts:m.ts}, updated_at:new Date().toISOString()});
+      if(error) throw error;
+      m.up = true; idbSet('foto:' + p.id, {img:fotos[p.id], ts:m.ts, up:true}).catch(() => {});
+    }
+    // bajar las que faltan o están desactualizadas
+    const need = conFoto.filter(p => { const m = fotoMeta[p.id]; return !m || m.ts < p.foto; }).map(p => p.id);
+    let got = 0;
+    for(const part of chunks(need, 15)){
+      const { data, error } = await sb.from('photos').select('id,data').in('id', part);
+      if(error) throw error;
+      for(const r of data || []){
+        const d = r.data || {}; if(!d.img) continue;
+        fotos[r.id] = d.img; fotoMeta[r.id] = {ts:d.ts||0, up:true};
+        await idbSet('foto:' + r.id, {img:d.img, ts:d.ts||0, up:true}).catch(() => {}); got++;
+      }
+    }
+    // limpiar las de productos que ya no tienen foto (borrada en otro dispositivo)
+    const ids = new Set(conFoto.map(p => p.id));
+    Object.keys(fotoMeta).forEach(id => { if(!ids.has(id)){ delete fotos[id]; delete fotoMeta[id]; idbDel('foto:' + id).catch(() => {}); } });
+    if(got) fotosRedraw();
+  }catch(e){ if(missingTable(e)){ fotoTableMissing = true; console.warn('Falta la tabla photos en Supabase: las fotos quedan solo en este dispositivo.'); } else console.error(e); }
+  fsyncing = false;
 }
 
 /* ===== STOCK ===== */
@@ -1222,7 +1275,7 @@ function saveProduct(id){
   persist('products'); closeModal(); render(); drawFound();
   if(fast && !id) $('#msg').textContent = 'Producto cargado: '+d.name;
 }
-function delProduct(id){ if(!confirm('¿Eliminar este producto?')) return; S.products=S.products.filter(p=>p.id!==id); delete fotos[id]; idbDel('foto:' + id).catch(() => {}); persist('products'); stockFound=null; closeModal(); render(); }
+function delProduct(id){ if(!confirm('¿Eliminar este producto?')) return; S.products=S.products.filter(p=>p.id!==id); fotoGone(id); persist('products'); stockFound=null; closeModal(); render(); }
 
 function priceDlg(){
   modal(`<h2>Ajustar precios</h2>
