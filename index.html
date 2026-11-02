@@ -213,7 +213,18 @@ const persist = k => { DB.save(k, S[k]); scheduleSync(); };
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random()));
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fmt = n => new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',minimumFractionDigits:0,maximumFractionDigits:2}).format(n||0);
+/* Ojo de la pestaña Caja: oculta los montos solo en esa pantalla (no en Ganancias ni Historial). Mientras hay un diálogo abierto
+   (cerrar caja, retiros) los montos se ven, porque ahí hay que verlos para decidir. La preferencia se recuerda en este dispositivo. */
+let hideMoney = (() => { try{ return localStorage.getItem('caja_hide_money')==='1'; }catch{ return false; } })();
+const maskOn = () => hideMoney && view==='caja' && !(document.getElementById('dlg') || {}).open;
+const fmt = n => maskOn() ? '$ ••••' : new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',minimumFractionDigits:0,maximumFractionDigits:2}).format(n||0);
+const EYE = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path d="M3 3l18 18"/></svg>';
+const eyeBtn = () => `<button class="s" onclick="toggleMoney()" aria-label="${hideMoney ? 'Mostrar montos' : 'Ocultar montos'}" aria-pressed="${hideMoney}" title="${hideMoney ? 'Mostrar montos' : 'Ocultar montos'}" style="min-height:36px;padding:0 10px">${hideMoney ? EYE_OFF : EYE}</button>`;
+function toggleMoney(){
+  hideMoney = !hideMoney; try{ localStorage.setItem('caja_hide_money', hideMoney ? '1' : '0'); }catch(e){}
+  const y = window.scrollY; render(); window.scrollTo(0, y);
+}
 const fdt = iso => new Date(iso).toLocaleString('es-AR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
 const dayOf = iso => { const d=new Date(iso); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
 const today = () => dayOf(new Date().toISOString());
@@ -539,14 +550,14 @@ function vCaja(){
   const s = openSession();
   if(!s){
     const last = S.sessions.filter(x=>x.closedAt).slice(-1)[0];
-    $('#app').innerHTML = `<div class="card"><h2>Caja cerrada</h2>
+    $('#app').innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:14px"><h2 style="margin:0">Caja cerrada</h2>${eyeBtn()}</div>
       <p class="mut">Abrí la caja con el efectivo inicial para poder registrar ventas y egresos.</p>
       <div class="row"><div><label>Efectivo inicial</label><input id="op" inputmode="decimal" value="${last?last.counted:0}"></div>
       <div class="fit"><button class="b" onclick="openCaja()">Abrir caja</button></div></div></div>` + closedList() + cuentasCard() + seguridadCard() + backupCard();
     return;
   }
   const r = summary(s);
-  $('#app').innerHTML = `<div class="card"><h2>Caja abierta <span class="mut" style="font-weight:400;font-size:13px">desde ${fdt(s.openedAt)}</span></h2>
+  $('#app').innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:14px"><h2 style="margin:0">Caja abierta <span class="mut" style="font-weight:400;font-size:13px">desde ${fdt(s.openedAt)}</span></h2>${eyeBtn()}</div>
     <div class="grid">
       <div class="stat hero"><small>Efectivo esperado</small><b>${fmt(r.expectedCash)}</b></div>
       <div class="stat"><small>Ingresos</small><b class="in">${fmt(r.in)}</b></div>
@@ -587,7 +598,7 @@ function cerrarDlg(){
   diffInfo(); usdInfo(); if(navigator.onLine) fetchUsd(true);
 }
 /* Balance del día en dólares: la cotización se trae de dolarapi.com (precio de venta) o se escribe a mano. */
-const fmtUsd = n => new Intl.NumberFormat('es-AR',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2}).format(n||0);
+const fmtUsd = n => maskOn() ? 'US$ ••••' : new Intl.NumberFormat('es-AR',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2}).format(n||0);
 function usdInfo(){
   const el = $('#usdinfo'); if(!el) return;
   const s = openSession(); if(!s) return;
