@@ -1431,7 +1431,7 @@ const plabel = (k, a) => k==='dia' ? a.toLocaleDateString('es-AR',{day:'2-digit'
   : k==='semana' ? 'sem '+a.toLocaleDateString('es-AR',{day:'2-digit',month:'2-digit'})
   : k==='mes' ? a.toLocaleDateString('es-AR',{month:'short',year:'2-digit'}) : String(a.getFullYear());
 function vGan(){
-  if(pinSet() && !ganUnlocked){ vPinGate(); return; }
+  if(!ganUnlocked){ vPinGate(); return; }
   const rate = getSet().usdRate, utype = getSet().usdType;
   const hist = !!usdHistGet(utype), usd = ganCur==='usd' && !!(hist || rate), rf = rateFn();
   if(ganCur==='usd') fetchUsdHist(utype);
@@ -1576,11 +1576,29 @@ async function pinOk(pin){
   return ok;
 }
 function vPinGate(){
+  if(!pinSet()){
+    $('#app').innerHTML = `<div class="panel" style="max-width:340px;margin:30px auto;text-align:center"><h2>Ganancias</h2>
+      <p class="mut">Ganancias está protegido. Creá una clave de 4 números: la vas a pedir cada vez que entres.</p>
+      <div class="field"><input id="pn1" type="password" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="Clave" aria-label="Clave de 4 dígitos" style="text-align:center;font-size:24px;letter-spacing:.4em;max-width:200px" oninput="this.value=this.value.replace(/\\D/g,'')"></div>
+      <div class="field"><input id="pn2" type="password" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="Repetir" aria-label="Repetir la clave" style="text-align:center;font-size:24px;letter-spacing:.4em;max-width:200px" oninput="this.value=this.value.replace(/\\D/g,'')"></div>
+      <div id="pgerr" class="out field" style="min-height:22px"></div>
+      <button class="b" onclick="createPin()">Guardar y entrar</button></div>`;
+    const i = $('#pn1'); if(i) i.focus(); return;
+  }
   $('#app').innerHTML = `<div class="panel" style="max-width:340px;margin:30px auto;text-align:center"><h2>Ganancias</h2>
     <p class="mut">Ingresá tu clave de 4 dígitos.</p>
     <input id="pg" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" aria-label="Clave de 4 dígitos" style="text-align:center;font-size:28px;letter-spacing:.5em;max-width:200px" oninput="pinGateInput(this)">
     <div id="pgerr" class="out field" style="min-height:22px"></div></div>`;
   const i = $('#pg'); if(i){ i.focus(); } pinWaitMsg();
+}
+async function createPin(){
+  const a = $('#pn1').value, b = $('#pn2').value, e = $('#pgerr'), say = t => { if(e) e.textContent = t; };
+  if(!crypto.subtle){ say('Este navegador no permite guardar la clave (hace falta https).'); return; }
+  if(!/^\d{4}$/.test(a)){ say('La clave tiene que ser de 4 números.'); return; }
+  if(a !== b){ say('Las dos claves no coinciden.'); return; }
+  const salt = [...crypto.getRandomValues(new Uint8Array(16))].map(x => x.toString(16).padStart(2,'0')).join('');
+  saveSettings({pinSalt:salt, pinHash:await pinHashOf(a, salt)});
+  ganUnlocked = true; vGan();
 }
 function pinWaitMsg(){ const w = pinWait(), e = $('#pgerr'); if(!e) return false; if(w){ e.textContent = 'Demasiados intentos. Esperá ' + w + ' s.'; setTimeout(pinWaitMsg, 1000); } else if(/Esperá/.test(e.textContent)) e.textContent = ''; return w > 0; }
 async function pinGateInput(el){
@@ -1601,8 +1619,8 @@ function seguridadCard(){
     <div class="field"><label>Clave de Ganancias (4 dígitos)</label>
       <div class="row">${has ? inp('pk0','Clave actual') : ''}${inp('pk1', has ? 'Nueva clave' : 'Clave')}${inp('pk2','Repetir')}</div>
       <div class="row" style="margin-top:8px"><div class="fit"><button class="b" onclick="savePin()">${has ? 'Cambiar clave' : 'Guardar clave'}</button></div>
-      ${has ? '<div class="fit"><button class="d" onclick="delPin()">Quitar clave</button></div>' : ''}</div>
-      <div id="pkmsg" class="mut" style="font-size:13px;margin-top:6px">${has ? 'La clave está activa: Ganancias la pide cada vez que entrás.' : 'Sin clave: cualquiera con la sesión abierta ve Ganancias.'}</div></div></div>`;
+      </div>
+      <div id="pkmsg" class="mut" style="font-size:13px;margin-top:6px">${has ? 'La clave está activa: Ganancias la pide cada vez que entrás.' : 'Todavía no hay clave: Ganancias queda bloqueado hasta que la crees (acá o la primera vez que entres).'}</div></div></div>`;
 }
 const pkMsg = (t, bad) => { const e = $('#pkmsg'); if(e){ e.textContent = t; e.className = bad ? 'out' : 'in'; } };
 async function savePin(){
@@ -1616,11 +1634,6 @@ async function savePin(){
   }
   const salt = [...crypto.getRandomValues(new Uint8Array(16))].map(x => x.toString(16).padStart(2,'0')).join('');
   saveSettings({pinSalt:salt, pinHash:await pinHashOf(a, salt)}); ganUnlocked = false; render(); pkMsg('Clave guardada.');
-}
-async function delPin(){
-  if(pinWait()){ pkMsg('Demasiados intentos. Esperá ' + pinWait() + ' s.', true); return; }
-  if(!(await pinOk($('#pk0').value))){ pkMsg('Para quitarla, escribí la clave actual.', true); return; }
-  saveSettings({pinSalt:'', pinHash:''}); render(); pkMsg('Clave quitada.');
 }
 
 /* ===== MONOTRIBUTO =====
@@ -1656,7 +1669,7 @@ function monoBanner(){
   if(!S.movements.length) return '';
   const ack = monoAckGet(), items = monoData().rows.filter(r => r.lim && monoLvl(r) > (ack[monoKey(r)] || 0));
   if(!items.length) return '';
-  const hi = items.some(r => r.level >= 2), hide = pinSet() && !ganUnlocked;
+  const hi = items.some(r => r.level >= 2), hide = !ganUnlocked;
   return `<div class="monob${hi?' hi':''}" role="alert"><b>Monotributo</b>${items.map(r => {
     const who = esc(accLabel(r.k)) + ' (cat. ' + esc(r.cat) + ')';
     if(hide) return `<p>${who}: ${r.level >= 3 ? '<b>superaste el tope anual</b>' : r.level >= 1 ? 'te estás acercando al tope anual' : 'este mes va por encima del ritmo mensual'}. El detalle está en Ganancias.</p>`;
