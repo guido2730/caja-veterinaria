@@ -146,6 +146,9 @@ td.r,th.r{text-align:right}
 .brk i{display:block;height:6px;border-radius:3px;background:var(--bd);margin-top:4px;overflow:hidden}.brk u{display:block;height:100%;background:var(--ac);border-radius:3px}
 .monob{border:1.5px solid var(--warn);border-left-width:6px;border-radius:10px;padding:10px 14px;margin:12px 0;font-size:14px}
 .monob.hi{border-color:var(--bad)}.monob p{margin:2px 0}.monob .row{margin-top:8px}
+.pth{width:48px;height:48px;object-fit:cover;border-radius:8px;flex:none;background:var(--bd)}
+.fbox{width:96px;height:96px;border-radius:10px;border:1.5px dashed var(--bd2);display:flex;align-items:center;justify-content:center;overflow:hidden;color:var(--mut);font-size:12px;text-align:center;flex:none}
+.fbox img{width:100%;height:100%;object-fit:cover}
 .seg{display:flex;gap:6px}.seg .fit{flex:1}.seg button{width:100%;min-height:40px;padding:0 6px}
 .themebtn{flex:none;width:40px;height:40px;display:grid;place-items:center;border:0;border-radius:10px;background:none;color:var(--mut);cursor:pointer}
 .themebtn:hover{color:var(--tx);background:var(--ac2)}
@@ -394,6 +397,7 @@ async function boot(){
   }
   startIdle();
   render();
+  loadFotos().then(() => { if(!dlg.open && (view==='stock' || view==='vender')) render(); });
   if(user) sync(true);
 }
 
@@ -434,6 +438,7 @@ function render(){
    o, si no hay carpeta, se descarga. Cuando haya Supabase esto pasa a ser secundario. */
 const idbOpen = () => new Promise((res,rej) => { const r = indexedDB.open('caja_meta',1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
 const idbGet = async k => { const db = await idbOpen(); return new Promise((res,rej) => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); };
+const idbDel = async k => { const db = await idbOpen(); return new Promise((res,rej) => { const t = db.transaction('kv','readwrite'); t.objectStore('kv').delete(k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); };
 const idbSet = async (k,v) => { const db = await idbOpen(); return new Promise((res,rej) => { const t = db.transaction('kv','readwrite'); t.objectStore('kv').put(v,k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); };
 const snapshot = () => JSON.stringify({version:1, exportedAt:new Date().toISOString(), data:{products:S.products, services:S.services, movements:S.movements, sessions:S.sessions, stocklog:S.stocklog, settings:S.settings}}, null, 1);
 async function backupTo(){
@@ -806,7 +811,7 @@ function suggest(t){
   const pr = S.products.filter(p => !p.internal && (p.name.toLowerCase().includes(t) || p.barcode.includes(t))).slice(0,6);
   const sv = S.services.filter(s => s.name.toLowerCase().includes(t)).slice(0,6);
   const exact = S.services.some(s => s.name.toLowerCase()===t);
-  box.innerHTML = '<div class="sug">' + pr.map(p => `<div onclick="addProduct('${p.id}')"><span>${esc(pname(p))}</span><span class="mut">${fmt(p.price)} · stock ${p.stock}</span></div>`).join('')
+  box.innerHTML = '<div class="sug">' + pr.map(p => `<div onclick="addProduct('${p.id}')">${withFoto(p, `<span>${esc(pname(p))}</span>`)}<span class="mut">${fmt(p.price)} · stock ${p.stock}</span></div>`).join('')
     + sv.map(s => `<div onclick="pickService('${s.id}')"><span>${esc(s.name)} <span class="tag">servicio</span></span><span class="mut">${fmt(s.price)}</span></div>`).join('')
     + (exact ? '' : `<div onclick="newServiceDlg($('#q').value.trim(), true)"><span>+ Servicio nuevo «${esc(t0)}»</span><span class="mut">poné el precio</span></div>`) + '</div>';
 }
@@ -933,6 +938,58 @@ function cobrar(){
   editing=null; cart=[]; pay=[{method:'efectivo',amount:0}]; adj=0; who=''; render();
 }
 
+/* ===== FOTOS DE PRODUCTOS =====
+   Opcionales. Se guardan en IndexedDB de ESTE dispositivo (no dentro del producto): localStorage tiene un tope de ~5 MB y, si se
+   llenara, dejaría de guardar ventas. Se reducen a 400 px (JPEG) para que pesen ~20-40 KB. Por ahora no se sincronizan entre dispositivos. */
+const fotos = {};
+let pendFoto, fotoFor = null;   // pendFoto: undefined = sin cambios, texto = foto nueva, null = quitar
+async function loadFotos(){
+  try{
+    const db = await idbOpen();
+    await new Promise(res => { const rq = db.transaction('kv').objectStore('kv').openCursor();
+      rq.onsuccess = () => { const c = rq.result; if(!c){ res(); return; } if(String(c.key).startsWith('foto:')) fotos[String(c.key).slice(5)] = c.value; c.continue(); };
+      rq.onerror = () => res(); });
+  }catch(e){}
+}
+function fotoFromFile(file){
+  return new Promise((res, rej) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const k = Math.min(1, 400 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k));
+      const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url); res(c.toDataURL('image/jpeg', 0.72));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('img')); };
+    img.src = url;
+  });
+}
+const withFoto = (p, inner, big) => fotos[p.id] ? `<div style="display:flex;gap:10px;align-items:center;min-width:0"><img class="pth" src="${fotos[p.id]}" alt=""${big ? ` onclick="fotoBig('${p.id}')" style="cursor:zoom-in"` : ''}>${inner}</div>` : inner;
+function fotoBig(id){ const p = S.products.find(x => x.id===id); if(!p || !fotos[id]) return;
+  modal(`<h2>${esc(pname(p))}</h2><img src="${fotos[id]}" alt="" style="width:100%;border-radius:10px"><div class="row" style="margin-top:12px"><div><button class="s" style="width:100%" onclick="closeModal()">Cerrar</button></div></div>`); }
+function fotoField(p){
+  fotoFor = p && p.id || null; pendFoto = undefined;
+  return `<div class="field"><label>Foto (opcional)</label><div class="row" style="align-items:center"><div class="fit"><div class="fbox" id="fbox">${fotoBoxHtml()}</div></div>
+    <div class="fit"><button class="s" type="button" onclick="$('#fcam').click()">Tomar foto</button></div>
+    <div class="fit"><button class="s" type="button" onclick="$('#fgal').click()">Galería</button></div>
+    <div class="fit" id="fdel"${fotoCur() ? '' : ' hidden'}><button class="d" type="button" onclick="quitFoto()">Quitar</button></div></div>
+    <input type="file" id="fcam" accept="image/*" capture="environment" hidden onchange="pickFoto(this)"><input type="file" id="fgal" accept="image/*" hidden onchange="pickFoto(this)"></div>`;
+}
+const fotoCur = () => pendFoto === undefined ? (fotoFor ? fotos[fotoFor] : '') : pendFoto;
+const fotoBoxHtml = () => fotoCur() ? `<img src="${fotoCur()}" alt="">` : 'Sin foto';
+function fotoRedraw(){ const b = $('#fbox'), d = $('#fdel'); if(b) b.innerHTML = fotoBoxHtml(); if(d) d.hidden = !fotoCur(); }
+async function pickFoto(inp){
+  const f = inp.files && inp.files[0]; inp.value = ''; if(!f) return;
+  try{ pendFoto = await fotoFromFile(f); fotoRedraw(); }catch(e){ alert('No se pudo leer esa foto. Probá con otra.'); }
+}
+function quitFoto(){ pendFoto = null; fotoRedraw(); }
+function saveFoto(pid){
+  if(pendFoto === undefined) return;
+  const v = pendFoto; pendFoto = undefined;
+  if(v){ fotos[pid] = v; idbSet('foto:' + pid, v).catch(() => alert('La foto se ve ahora, pero no se pudo guardar en este dispositivo.')); }
+  else { delete fotos[pid]; idbDel('foto:' + pid).catch(() => {}); }
+}
+
 /* ===== STOCK ===== */
 const cats = () => [...new Set(S.products.map(p => p.category).filter(Boolean))].sort();
 function vStock(){
@@ -979,7 +1036,7 @@ function drawSugg(){
   const t = q.value.trim();
   if(t.length < 2){ el.innerHTML = ''; return; }
   const h = stockHits(t);
-  el.innerHTML = h.length ? h.slice(0, 8).map(p => `<div class="stat" role="button" tabindex="0" onclick="pickStock('${p.id}')" onkeydown="if(event.key==='Enter')pickStock('${p.id}')" style="cursor:pointer;margin-top:6px"><div class="found"><div><b>${esc(p.name)}</b>${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}<div class="mut">${p.category ? esc(p.category) : 'Sin categoría'}</div></div><div>Stock: <b class="${p.stock<=0?'out':''}">${p.stock}</b></div></div></div>`).join('')
+  el.innerHTML = h.length ? h.slice(0, 8).map(p => `<div class="stat" role="button" tabindex="0" onclick="pickStock('${p.id}')" onkeydown="if(event.key==='Enter')pickStock('${p.id}')" style="cursor:pointer;margin-top:6px"><div class="found">${withFoto(p, `<div><b>${esc(p.name)}</b>${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}<div class="mut">${p.category ? esc(p.category) : 'Sin categoría'}</div></div>`)}<div>Stock: <b class="${p.stock<=0?'out':''}">${p.stock}</b></div></div></div>`).join('')
     + (h.length > 8 ? `<div class="mut" style="margin-top:6px;font-size:13px">y ${h.length - 8} más: seguí escribiendo para acotar.</div>` : '')
     : '<div class="mut" style="margin-top:8px">Sin coincidencias.</div>';
 }
@@ -1072,7 +1129,7 @@ function drawFound(){
   const base = stockFound.product && S.products.find(x => x.id===stockFound.product.id);
   const list = (code ? S.products.filter(x => x.barcode===code) : base ? S.products.filter(x => sameFam(base, x)) : []).sort((x, y) => (x.presentation||'').localeCompare(y.presentation||''));
   if(!list.length){ f.innerHTML = `<div class="stat"><div class="found"><div>Código <b>${esc(code)}</b> no está cargado.</div><button class="b" onclick="newProductDlg('${esc(code)}')">Cargar producto</button></div></div>`; return; }
-  f.innerHTML = list.map(p => `<div class="stat"><div class="found"><div><b>${esc(p.name)}</b>${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}<div class="mut">${p.barcode ? 'Código ' + esc(p.barcode) : 'Sin código'}${p.category?' · '+esc(p.category):''}</div></div>
+  f.innerHTML = list.map(p => `<div class="stat"><div class="found">${withFoto(p, `<div><b>${esc(p.name)}</b>${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}<div class="mut">${p.barcode ? 'Código ' + esc(p.barcode) : 'Sin código'}${p.category?' · '+esc(p.category):''}</div></div>`, true)}
     ${p.internal?'':`<div class="p">${fmt(p.price)}</div>`}<div>Stock: <b class="${p.stock<=0?'out':''}">${p.stock}</b></div></div>
     <div class="row" style="margin-top:10px"><div class="fit"><button class="b" onclick="addStockDlg('${p.id}')">+ Agregar unidades</button></div><div class="fit"><button class="s" onclick="useDlg('${p.id}')">Registrar uso</button></div>${p.contains && S.products.some(x => x.id===p.contains.to) ? `<div class="fit"><button class="s" onclick="openDlg('${p.id}')">Abrir</button></div>` : ''}<div class="fit"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></div></div></div>`).join('') +
     `<div style="margin-top:8px"><button class="s" onclick="newProductDlg('${esc(code)}', '${list[0].id}')">+ Otra presentación${code ? ' de este código' : ' de este producto'}</button></div>`;
@@ -1091,7 +1148,7 @@ function drawList(){
   const t = ($('#fl')||{value:''}).value.toLowerCase();
   if(!t && !showAllP){ $('#plist').innerHTML = S.products.length || S.services.length ? `<div class="empty">Escribí arriba para buscar entre ${S.products.length} productos y ${S.services.length} servicios. <button class="s" onclick="showAllP=true;drawList();drawServices()">Ver todos</button></div>` : '<div class="empty">Sin productos. Escaneá uno para empezar.</div>'; return; }
   const r = S.products.filter(p => p.name.toLowerCase().includes(t) || p.barcode.includes(t) || (p.category||'').toLowerCase().includes(t)).sort((a,b)=>a.name.localeCompare(b.name));
-  $('#plist').innerHTML = r.length ? `<table><tr><th>Producto</th><th class="hide-s">Categoría</th><th class="hide-s">Código</th><th class="r">Precio</th><th class="r">Stock</th><th></th></tr>${r.map(p=>`<tr><td>${esc(p.name)}${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}</td><td class="hide-s mut">${esc(p.category||'')}</td><td class="hide-s mut">${esc(p.barcode)}</td><td class="r">${p.internal?'—':fmt(p.price)}</td><td class="r ${p.stock<=0?'out':p.stock<=minOf(p)?'low':''}" title="Mínimo ${minOf(p)}">${p.stock}</td><td class="r"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></td></tr>`).join('')}</table>` : '<div class="empty">' + (S.products.length ? 'Ningún producto coincide.' : 'Sin productos. Escaneá uno para empezar.') + '</div>';
+  $('#plist').innerHTML = r.length ? `<table><tr><th>Producto</th><th class="hide-s">Categoría</th><th class="hide-s">Código</th><th class="r">Precio</th><th class="r">Stock</th><th></th></tr>${r.map(p=>`<tr><td>${withFoto(p, `<div>${esc(p.name)}${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}</div>`)}</td><td class="hide-s mut">${esc(p.category||'')}</td><td class="hide-s mut">${esc(p.barcode)}</td><td class="r">${p.internal?'—':fmt(p.price)}</td><td class="r ${p.stock<=0?'out':p.stock<=minOf(p)?'low':''}" title="Mínimo ${minOf(p)}">${p.stock}</td><td class="r"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></td></tr>`).join('')}</table>` : '<div class="empty">' + (S.products.length ? 'Ningún producto coincide.' : 'Sin productos. Escaneá uno para empezar.') + '</div>';
 }
 function addStockDlg(id){
   const p=S.products.find(x=>x.id===id);
@@ -1124,7 +1181,7 @@ function autoPrice(){
 }
 function productForm(p, code){
   p = p || {name:'',barcode:code||'',presentation:'',price:'',cost:'',stock:1,category:'',min:3};
-  return `<div class="field"><label>Código de barras (opcional)</label><input id="pb" value="${esc(p.barcode)}"></div>
+  return `${fotoField(p)}<div class="field"><label>Código de barras (opcional)</label><input id="pb" value="${esc(p.barcode)}"></div>
     <div class="field"><label>Nombre</label><input id="pn" value="${esc(p.name)}"></div>
     <div class="field"><label>Presentación (opcional)</label><input id="ppr" list="presl" value="${esc(p.presentation||'')}" placeholder="Caja, Blister, Unidad…"><datalist id="presl"><option value="Caja"><option value="Blister"><option value="Unidad"><option value="Frasco"></datalist>
       <div class="mut" style="font-size:12px;margin-top:4px">Si se vende de más de una forma con el mismo código, cargá cada una con su presentación, precio y stock.</div></div>
@@ -1159,11 +1216,13 @@ function saveProduct(id){
   if(dup){ const w = d.barcode ? 'con ese código' : 'con ese nombre'; alert(d.presentation ? 'Ya existe "' + pname(dup) + '" ' + w + ' y esa presentación.' : 'Ya existe "' + dup.name + '" ' + w + '. Si es otra forma de venta, poné la presentación (Caja, Blister…).'); return; }
   const others = S.products.filter(p => p.id!==id && sameFam(d, p));
   if(!id && others.length && !confirm('Ya existe "' + pname(others[0]) + '" ' + (d.barcode ? 'con ese código' : 'con ese nombre') + '.\n\n¿Agregar "' + pname(d) + '" como otra presentación / forma de venta?')) return;
-  if(id) Object.assign(S.products.find(p=>p.id===id), d); else { const p={id:uid(),...d}; S.products.push(p); stockFound={code:d.barcode,product:p}; }
+  let pid = id;
+  if(id) Object.assign(S.products.find(p=>p.id===id), d); else { const p={id:uid(),...d}; pid = p.id; S.products.push(p); stockFound={code:d.barcode,product:p}; }
+  saveFoto(pid);
   persist('products'); closeModal(); render(); drawFound();
   if(fast && !id) $('#msg').textContent = 'Producto cargado: '+d.name;
 }
-function delProduct(id){ if(!confirm('¿Eliminar este producto?')) return; S.products=S.products.filter(p=>p.id!==id); persist('products'); stockFound=null; closeModal(); render(); }
+function delProduct(id){ if(!confirm('¿Eliminar este producto?')) return; S.products=S.products.filter(p=>p.id!==id); delete fotos[id]; idbDel('foto:' + id).catch(() => {}); persist('products'); stockFound=null; closeModal(); render(); }
 
 function priceDlg(){
   modal(`<h2>Ajustar precios</h2>
