@@ -200,6 +200,7 @@ details{margin-bottom:12px}summary{cursor:pointer;color:var(--ac);font-weight:65
 </div></header>
 <main id="app"></main>
 <dialog id="dlg"></dialog>
+<dialog id="camdlg"></dialog>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.js"></script>
 
 <script>
@@ -1007,13 +1008,38 @@ function fotoBig(id){ const p = S.products.find(x => x.id===id); if(!p || !fotoO
 function fotoField(p){
   fotoFor = p && p.id || null; pendFoto = undefined;
   return `<div class="field"><label>Foto (opcional)</label><div class="row" style="align-items:center"><div class="fit"><div class="fbox" id="fbox">${fotoBoxHtml()}</div></div>
-    <div class="fit"><button class="s" type="button" onclick="$('#fgal').click()">Cámara / Galería</button></div>
+    <div class="fit"><button class="s" type="button" onclick="fotoCam()">Tomar foto</button></div>
+    <div class="fit"><button class="s" type="button" onclick="$('#fgal').click()">Galería</button></div>
     <div class="fit" id="fdel"${fotoCur() ? '' : ' hidden'}><button class="d" type="button" onclick="quitFoto()">Quitar</button></div></div>
     <input type="file" id="fgal" accept="image/*" hidden onchange="pickFoto(this)"></div>`;
 }
 const fotoCur = () => pendFoto === undefined ? (fotoFor ? fotoOf(S.products.find(x => x.id===fotoFor)) : '') : pendFoto;
 const fotoBoxHtml = () => fotoCur() ? `<img src="${fotoCur()}" alt="">` : 'Sin foto';
 function fotoRedraw(){ const b = $('#fbox'), d = $('#fdel'); if(b) b.innerHTML = fotoBoxHtml(); if(d) d.hidden = !fotoCur(); }
+/* Cámara dentro de la app: no lanza la app de cámara del sistema (que en celulares justos de RAM cierra el navegador). */
+let fotoStream = null;
+const fotoCamStop = () => { if(fotoStream){ fotoStream.getTracks().forEach(t => t.stop()); fotoStream = null; } };
+function fotoCamClose(){ fotoCamStop(); const d = $('#camdlg'); if(d.open) d.close(); d.innerHTML = ''; }
+$('#camdlg').addEventListener('close', fotoCamStop);
+async function fotoCam(){
+  if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)){ $('#fgal').click(); return; }
+  const d = $('#camdlg');
+  d.innerHTML = `<h2>Tomar foto</h2><video id="fcv" playsinline muted style="width:100%;border-radius:10px;background:#000"></video><div class="row" style="margin-top:12px"><div><button class="s" type="button" style="width:100%" onclick="fotoCamClose()">Cancelar</button></div><div><button class="b" type="button" style="width:100%" onclick="fotoSnap()">Capturar</button></div></div>`;
+  d.showModal();
+  try{
+    fotoStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}, audio:false});
+    const v = $('#fcv'); if(!v){ fotoCamStop(); return; }
+    v.srcObject = fotoStream; await v.play();
+  }catch(e){ fotoCamClose(); alert('No se pudo abrir la cámara (falta el permiso). Elegí la foto desde la galería.'); }
+}
+function fotoSnap(){
+  const v = $('#fcv'); if(!v || !v.videoWidth) return;
+  const k = Math.min(1, 400 / Math.max(v.videoWidth, v.videoHeight)), c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(v.videoWidth * k)); c.height = Math.max(1, Math.round(v.videoHeight * k));
+  const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(v, 0, 0, c.width, c.height);
+  pendFoto = c.toDataURL('image/jpeg', 0.72); c.width = c.height = 0;
+  fotoCamClose(); fotoRedraw();
+}
 async function pickFoto(inp){
   const f = inp.files && inp.files[0]; inp.value = ''; if(!f) return;
   try{ pendFoto = await fotoFromFile(f); fotoRedraw(); }catch(e){ alert('No se pudo leer esa foto. Probá con otra.'); }
