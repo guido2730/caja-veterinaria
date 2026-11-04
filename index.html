@@ -855,6 +855,30 @@ function addByCode(code){
   if(/^\d{6,}$/.test(code)){ if(confirm('Código '+code+' no está en stock. ¿Cargarlo ahora?')){ stockFound={code,product:null}; view='stock'; render(); newProductDlg(code); } }
   else newServiceDlg(code, true);
 }
+/* Lector USB/Bluetooth (actúa como teclado): si se escanea un código sin tener un campo de texto en foco,
+   se va directo a Vender y se agrega el producto. Se distingue de tipear porque las teclas llegan con <60 ms entre sí.
+   No actúa en Stock (ahí el escaneo tiene su propio modo), con un diálogo abierto, ni con la caja cerrada. */
+let scanBuf = '', scanLast = 0;
+window.addEventListener('keydown', e => {
+  if(e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target, tag = t && t.tagName;
+  if(tag==='INPUT' || tag==='TEXTAREA' || tag==='SELECT' || (t && t.isContentEditable)) { scanBuf = ''; return; }
+  if(view==='stock' || dlg.open || !hasAccess() || !openSession()) { scanBuf = ''; return; }
+  const now = Date.now();
+  if(e.key==='Enter' || e.key==='Tab'){
+    const code = scanBuf; scanBuf = '';
+    if(code.length >= 4){
+      e.preventDefault();
+      if(view!=='vender'){ view = 'vender'; render(); }
+      addByCode(code);
+    }
+    return;
+  }
+  if(e.key.length !== 1) return;
+  if(now - scanLast > 60) scanBuf = '';
+  scanLast = now; scanBuf += e.key;
+  if(scanBuf.length > 1) e.preventDefault();   // ya es una ráfaga rápida: que no active botones con foco
+}, true);
 function addProduct(id){
   const p = S.products.find(x => x.id===id); if(!p) return;
   const l = cart.find(x => x.productId===id);
