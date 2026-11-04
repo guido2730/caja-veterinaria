@@ -139,7 +139,8 @@ td.r,th.r{text-align:right}
 .pay{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-top:18px}
 .pay>div:first-child{flex:1 1 auto}
 .pay button{min-height:54px;font-size:17px;padding:0 30px}
-@media (max-width:759px){.pay .fit{flex:1 1 100%}.pay button{width:100%}.total{font-size:36px}}
+.pay .acts{display:flex;align-items:center;gap:10px}.pay .acts .cancel{min-height:44px;font-size:15px;padding:0 16px}
+@media (max-width:759px){.pay .fit{flex:1 1 100%}.pay button{width:100%}.pay .acts .cancel{width:auto;flex:none}.pay .acts .b{flex:1}.total{font-size:36px}}
 #q{min-height:54px;font-size:17px;border-width:2px;border-color:var(--ac)}
 .ico{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linejoin:round;vertical-align:middle}
 .brkh{display:flex;justify-content:space-between;align-items:baseline;margin-top:20px;padding-bottom:4px;border-bottom:1px solid var(--bd);font-weight:600}
@@ -757,6 +758,10 @@ function editarVenta(id){
   editing = {saleId:m.saleId, ts:head.ts};
   view = 'vender'; render();
 }
+function cancelSale(){
+  if(!editing && !confirm('¿Cancelar la venta actual? Se vacía el carrito.')) return;
+  cancelEdit();
+}
 function cancelEdit(){
   editing = null; cart = []; pay = [{method:'efectivo',amount:0}]; adj = 0; who = ''; render();
 }
@@ -904,7 +909,7 @@ function drawCart(){
       ${i?`<div class="fit"><button class="d" onclick="pay.splice(${i},1);drawCart()">✕</button></div>`:''}</div>`).join('')}
     <button class="s" onclick="pay.push({method:'tarjeta',amount:0});drawCart()">+ Dividir pago</button></div>
     <div class="pay"><div><div class="total">${fmt(total)}</div>${adj?`<div class="mut">Subtotal ${fmt(sub)} · ajuste ${adj>0?'+':''}${adj}%</div>`:''}</div>
-    <div class="fit"><button class="b" onclick="cobrar()">${editing ? 'Guardar cambios' : 'Cobrar'}</button></div></div>` : '<div class="empty">Escaneá un producto o agregá un servicio</div>');
+    <div class="fit acts"><button class="s cancel" onclick="cancelSale()">Cancelar</button><button class="b" onclick="cobrar()">${editing ? 'Guardar cambios' : 'Cobrar'}</button></div></div>` : '<div class="empty">Escaneá un producto o agregá un servicio</div>');
   if(first){ box.classList.remove('print'); void box.offsetWidth; box.classList.add('print'); }
 }
 function autoOpen(p, need, opened){
