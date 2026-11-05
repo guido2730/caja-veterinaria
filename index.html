@@ -253,7 +253,7 @@ function summary(sess){
   const ms = S.movements.filter(m => m.sessionId === sess.id);
   const r = { in:0, out:0, ret:0, apo:0, byIn:{}, byOut:{}, ms };
   METHODS.forEach(x => { r.byIn[x]=0; r.byOut[x]=0; });
-  ms.forEach(m => { if(m.voided) return; if(m.type==='ingreso'){ r.in+=m.amount; r.byIn[m.method]+=m.amount; } else if(m.type==='retiro'){ r.ret+=m.amount; } else if(m.type==='aporte'){ r.apo+=m.amount; } else { r.out+=m.amount; r.byOut[m.method]+=m.amount; } });
+  ms.forEach(m => { if(m.voided) return; if(m.type==='ingreso'){ r.in+=m.amount; r.byIn[m.method]+=m.amount; } else if(m.type==='retiro'){ r.ret+=m.amount; } else if(m.type==='aporte'){ r.apo+=m.amount; } else { r.out+=m.amount; if(m.offBox && m.method==='efectivo') r.offBox=(r.offBox||0)+m.amount; else r.byOut[m.method]+=m.amount; } });
   r.expectedCash = sess.opening + r.byIn.efectivo - r.byOut.efectivo - r.ret + r.apo;
   return r;
 }
@@ -718,7 +718,8 @@ function movDlg(type){
   modal(`<h2>${type==='egreso'?'Registrar egreso':'Ingreso manual'}</h2>
     <div class="field"><label>Concepto</label><input id="mc" placeholder="${type==='egreso'?'Ej: proveedor, luz, retiro…':'Ej: seña, otro ingreso…'}"></div>
     <div class="row field"><div><label>Monto</label><input id="ma" inputmode="decimal"></div>
-    <div><label>Medio</label><select id="mm" onchange="$('#macw').style.display=this.value==='efectivo'?'none':''">${mopts('efectivo')}</select></div></div>
+    <div><label>Medio</label><select id="mm" onchange="$('#macw').style.display=this.value==='efectivo'?'none':'';if($('#obw'))$('#obw').style.display=this.value==='efectivo'?'':'none'">${mopts('efectivo')}</select></div></div>
+    ${type==='egreso' ? `<label class="field" id="obw" style="display:flex;gap:8px;align-items:flex-start;font-size:14px"><input type="checkbox" id="mob" style="margin-top:3px"><span>Lo pagué con efectivo que <b>no es de la caja</b> (ganancias, dinero propio). Cuenta como gasto pero no baja el efectivo de la caja.</span></label>` : ''}
     <div class="field" id="macw" style="display:none"><label>Cuenta</label><select id="mac">${aopts(defAcc())}</select></div>    <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveMov('${type}')">Guardar</button></div></div>`);
   $('#mc').focus();
 }
@@ -726,8 +727,16 @@ const egresoDlg = () => movDlg('egreso'), ingresoDlg = () => movDlg('ingreso');
 function saveMov(type){
   const amount = num($('#ma').value), concept = $('#mc').value.trim();
   if(!concept || amount<=0){ alert('Completá concepto y un monto mayor a 0.'); return; }
-  S.movements.push({id:uid(), ts:new Date().toISOString(), type, concept, amount, method:$('#mm').value, account:$('#mm').value!=='efectivo' ? $('#mac').value : '', sessionId:openSession().id, items:[]});
+  S.movements.push({id:uid(), ts:new Date().toISOString(), type, concept, amount, method:$('#mm').value, account:$('#mm').value!=='efectivo' ? $('#mac').value : '', sessionId:openSession().id, items:[], ...(type==='egreso' && $('#mm').value==='efectivo' && $('#mob') && $('#mob').checked ? {offBox:true} : {})});
   persist('movements'); closeModal(); render();
+}
+function toggleOffBox(id){
+  const m = S.movements.find(x => x.id===id), cur = openSession();
+  if(!m || m.voided || m.type!=='egreso' || m.method!=='efectivo' || !cur || m.sessionId!==cur.id) return;
+  const to = !m.offBox;
+  if(!confirm(to ? 'Este pago NO salió de la caja: sigue contando como gasto, pero deja de descontarse del efectivo de la caja. ¿Confirmar?' : 'Este pago volverá a descontarse del efectivo de la caja. ¿Confirmar?')) return;
+  if(to) m.offBox = true; else delete m.offBox;
+  m.edited = true; persist('movements'); render();
 }
 function movTable(ms){
   if(!ms.length) return '<div class="empty">Sin movimientos</div>';
@@ -739,9 +748,9 @@ function movTable(ms){
       ? ` <button class="s chk${m.verified?' ok':''}" onclick="toggleVerified('${m.id}')">${m.verified ? '✓ Verificado' : 'Verificar'}</button>` : '';
     return `<tr><td class="${v}">${fdt(m.ts)}</td>
     <td class="${v}">${esc(m.concept)}${m.who ? ` <span class="mut">· ${esc(m.who)}</span>` : ''}${m.items && m.items.length ? `<div class="mut" style="font-size:12px">${m.items.map(i => `${i.qty}× ${esc(i.name)}`).join(', ')}</div>` : ''}
-      <div style="margin-top:6px">${m.edited ? '<span class="tag">Editada</span> ' : ''}${m.type==='retiro' ? '<span class="tag">Retiro</span> ' : m.type==='aporte' ? '<span class="tag">Efectivo agregado</span> ' : ''}${medio}${m.voided ? '' : ver}</div></td>
+      <div style="margin-top:6px">${m.edited ? '<span class="tag">Editada</span> ' : ''}${m.type==='retiro' ? '<span class="tag">Retiro</span> ' : m.type==='aporte' ? '<span class="tag">Efectivo agregado</span> ' : ''}${m.offBox ? '<span class="tag">Fuera de caja</span> ' : ''}${medio}${m.voided ? '' : ver}</div></td>
     <td class="r ${m.voided ? 'void' : m.type==='ingreso' ? 'in' : (m.type==='retiro' || m.type==='aporte') ? 'mut' : 'out'}">${m.type==='ingreso' || m.type==='aporte' ? '+' : '−'}${fmt(m.amount)}</td>
-    <td class="r">${m.voided ? `<span class="mut">${m.voidedByEdit ? 'reemplazada' : 'anulado'}</span>` : (cur && m.sessionId===cur.id ? `${m.saleId && m.items && m.items.length ? `<button class="s" onclick="editarVenta('${m.id}')">Editar</button> ` : ''}<button class="d" onclick="anular('${m.id}')">Anular</button>` : '')}</td></tr>`;
+    <td class="r">${m.voided ? `<span class="mut">${m.voidedByEdit ? 'reemplazada' : 'anulado'}</span>` : (cur && m.sessionId===cur.id ? `${m.saleId && m.items && m.items.length ? `<button class="s" onclick="editarVenta('${m.id}')">Editar</button> ` : ''}${m.type==='egreso' && m.method==='efectivo' ? `<button class="s" onclick="toggleOffBox('${m.id}')">${m.offBox ? 'Volver a caja' : 'Fuera de caja'}</button> ` : ''}<button class="d" onclick="anular('${m.id}')">Anular</button>` : '')}</td></tr>`;
   }).join('')}</table>`;
 }
 // Editar una venta: se vuelve a cargar en Vender; al guardar reemplaza a la original (que queda como "reemplazada").
