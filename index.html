@@ -458,18 +458,58 @@ const idbGet = async k => { const db = await idbOpen(); return new Promise((res,
 const idbDel = async k => { const db = await idbOpen(); return new Promise((res,rej) => { const t = db.transaction('kv','readwrite'); t.objectStore('kv').delete(k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); };
 const idbSet = async (k,v) => { const db = await idbOpen(); return new Promise((res,rej) => { const t = db.transaction('kv','readwrite'); t.objectStore('kv').put(v,k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); };
 const snapshot = () => JSON.stringify({version:1, exportedAt:new Date().toISOString(), data:{products:S.products, services:S.services, movements:S.movements, sessions:S.sessions, stocklog:S.stocklog, settings:S.settings}}, null, 1);
+/* Respaldo cifrado: AES-256-GCM, clave derivada con PBKDF2 (SHA-256). La clave del respaldo se guarda solo en este
+   dispositivo (IndexedDB local, no se sincroniza) para poder respaldar sola al cerrar el día. Sin clave no se respalda:
+   nunca se escribe un archivo legible. */
+const b64 = u => { u = new Uint8Array(u); let o = ''; for(let i = 0; i < u.length; i += 0x8000) o += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(o); };
+const unb64 = x => Uint8Array.from(atob(x), c => c.charCodeAt(0));
+const BK_IT = 600000;
+async function bkKey(pw, salt, it){
+  const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({name:'PBKDF2', salt, iterations:it, hash:'SHA-256'}, km, {name:'AES-GCM', length:256}, false, ['encrypt','decrypt']);
+}
+async function encryptBackup(text, pw){
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({name:'AES-GCM', iv}, await bkKey(pw, salt, BK_IT), new TextEncoder().encode(text));
+  return JSON.stringify({app:'caja-veterinaria', cifrado:true, v:1, kdf:'PBKDF2-SHA256', it:BK_IT, salt:b64(salt), iv:b64(iv), data:b64(ct)});
+}
+async function decryptBackup(env, pw){
+  try{
+    const pt = await crypto.subtle.decrypt({name:'AES-GCM', iv:unb64(env.iv)}, await bkKey(pw, unb64(env.salt), env.it), unb64(env.data));
+    return JSON.parse(new TextDecoder().decode(pt));
+  }catch(e){ throw new Error('Clave incorrecta o archivo dañado.'); }
+}
 async function backupTo(){
-  const name = `respaldo-caja-${today()}.json`;
+  const name = `respaldo-caja-${today()}.cifrado.json`;
+  let pw = null; try{ pw = await idbGet('bkpass'); }catch(e){}
+  if(!pw) return '⚠ NO se hizo el respaldo: falta la clave del respaldo. Ponela en Configuración → Respaldo.';
+  if(!(window.crypto && crypto.subtle)) return '⚠ NO se hizo el respaldo: este navegador no permite cifrar (hace falta https).';
+  const text = await encryptBackup(snapshot(), pw);
   try{
     const h = window.showDirectoryPicker ? await idbGet('dir') : null;
     if(h){
       let p = await h.queryPermission({mode:'readwrite'});
       if(p!=='granted') p = await h.requestPermission({mode:'readwrite'});
-      if(p==='granted'){ const f = await h.getFileHandle(name,{create:true}); const w = await f.createWritable(); await w.write(snapshot()); await w.close(); return `✔ Respaldo guardado en la carpeta "${h.name}" (${name}).`; }
+      if(p==='granted'){ const f = await h.getFileHandle(name,{create:true}); const w = await f.createWritable(); await w.write(text); await w.close(); return `✔ Respaldo cifrado guardado en la carpeta "${h.name}" (${name}).`; }
     }
   }catch(e){}
-  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([snapshot()],{type:'application/json'})); a.download = name; a.click();
-  return `Respaldo descargado: ${name}. Elegí una carpeta de Drive en Configuración para que se guarde sola.`;
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text],{type:'application/json'})); a.download = name; a.click();
+  return `Respaldo cifrado descargado: ${name}. Elegí una carpeta en Configuración para que se guarde sola.`;
+}
+function bkPassDlg(){
+  modal(`<h2>Clave del respaldo</h2>
+    <p class="mut" style="margin-top:0">Los respaldos se cifran con esta clave. <b>Si la perdés, los respaldos no se pueden abrir y no hay forma de recuperarla.</b> Anotala en un lugar seguro. Los respaldos hechos con una clave anterior siguen necesitando esa clave anterior.</p>
+    <div class="field"><label>Clave (mínimo 8 caracteres)</label><input id="bk1" type="password" autocomplete="new-password"></div>
+    <div class="field"><label>Repetir clave</label><input id="bk2" type="password" autocomplete="new-password"></div>
+    <div id="bke" class="out field" style="min-height:20px"></div>
+    <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" onclick="saveBkPass()">Guardar</button></div></div>`);
+  $('#bk1').focus();
+}
+async function saveBkPass(){
+  const a = $('#bk1').value, b = $('#bk2').value, say = t => { $('#bke').textContent = t; };
+  if(a.length < 8){ say('Tiene que tener al menos 8 caracteres.'); return; }
+  if(a !== b){ say('Las dos claves no coinciden.'); return; }
+  await idbSet('bkpass', a); bkHasPass = true; closeModal(); render();
 }
 async function pickBackupFolder(){
   if(!window.showDirectoryPicker){ alert('Elegir carpeta funciona en Chrome o Edge. En otros navegadores el respaldo se descarga.'); return; }
@@ -480,19 +520,37 @@ function importBackup(file){
   const rd = new FileReader();
   rd.onload = () => {
     let j; try{ j = JSON.parse(rd.result); }catch{ alert('El archivo no es un respaldo válido.'); return; }
-    const d = j && j.data;
-    if(!d || !Array.isArray(d.products) || !Array.isArray(d.movements) || !Array.isArray(d.sessions)){ alert('El archivo no es un respaldo de esta app.'); return; }
-    if(!confirm(`Esto REEMPLAZA los datos actuales por los del respaldo (${d.products.length} productos, ${d.movements.length} movimientos). ¿Continuar?`)) return;
-    ['products','services','movements','sessions','stocklog','settings'].forEach(k => { S[k] = d[k] || []; persist(k); });
-    cart = []; render();
+    if(j && j.cifrado && j.data && j.salt && j.iv){ askRestorePass(j); return; }
+    applyBackup(j);
   };
   rd.readAsText(file);
 }
+function askRestorePass(env){
+  modal(`<h2>Respaldo cifrado</h2><div class="field"><label>Clave del respaldo</label><input id="rp" type="password" autocomplete="off"></div>
+    <div id="rpe" class="out field" style="min-height:20px"></div>
+    <div class="row"><div><button class="s" style="width:100%" onclick="closeModal()">Cancelar</button></div><div><button class="b" style="width:100%" id="rpb">Abrir</button></div></div>`);
+  const go = async () => {
+    $('#rpe').textContent = 'Abriendo…';
+    try{ const j = await decryptBackup(env, $('#rp').value); closeModal(); applyBackup(j); }
+    catch(e){ $('#rpe').textContent = e.message; }
+  };
+  $('#rpb').onclick = go; $('#rp').addEventListener('keydown', e => { if(e.key==='Enter') go(); }); $('#rp').focus();
+}
+function applyBackup(j){
+  const d = j && j.data;
+  if(!d || !Array.isArray(d.products) || !Array.isArray(d.movements) || !Array.isArray(d.sessions)){ alert('El archivo no es un respaldo de esta app.'); return; }
+  if(!confirm(`Esto REEMPLAZA los datos actuales por los del respaldo (${d.products.length} productos, ${d.movements.length} movimientos). ¿Continuar?`)) return;
+  ['products','services','movements','sessions','stocklog','settings'].forEach(k => { S[k] = d[k] || []; persist(k); });
+  cart = []; render();
+}
+let bkHasPass = false;
+idbGet('bkpass').then(v => { bkHasPass = !!v; }).catch(() => {});
 function backupCard(){
   const dn = localStorage.getItem('caja_dirname');
   return `<div class="card"><h2>Respaldo</h2>
-    <p class="mut" style="margin-top:0">${dn?`Al cerrar el día se guarda en la carpeta <b>${esc(dn)}</b>.`:'Al cerrar el día se descarga un archivo. Elegí una carpeta de Google Drive para que se guarde sola.'}</p>
-    <div class="row"><div class="fit"><button class="s" onclick="pickBackupFolder()">Elegir carpeta</button></div><div class="fit"><button class="s" onclick="backupNow()">Respaldar ahora</button></div>
+    <p class="mut" style="margin-top:0">${dn?`Al cerrar el día se guarda cifrado en la carpeta <b>${esc(dn)}</b>.`:'Al cerrar el día se descarga un archivo cifrado. Elegí una carpeta para que se guarde sola.'}</p>
+    <p style="margin:0 0 12px">${bkHasPass ? '🔒 Clave del respaldo: puesta.' : '<b class="low">⚠ Falta la clave del respaldo: sin clave no se hacen respaldos.</b>'}</p>
+    <div class="row"><div class="fit"><button class="${bkHasPass?'s':'b'}" onclick="bkPassDlg()">${bkHasPass?'Cambiar clave':'Poner clave'}</button></div><div class="fit"><button class="s" onclick="pickBackupFolder()">Elegir carpeta</button></div><div class="fit"><button class="s" onclick="backupNow()">Respaldar ahora</button></div>
     <div class="fit"><button class="s" onclick="$('#bkf').click()">Restaurar respaldo</button><input type="file" id="bkf" accept=".json,application/json" hidden onchange="if(this.files[0])importBackup(this.files[0]);this.value=''"></div></div></div>`;
 }
 
