@@ -290,6 +290,7 @@ const SB_KEY = 'sb_publishable_K_VS1SvQAQhkPw3Ja71irQ_GwH2JoSd'; // clave públi
 let sb = null;
 try{ if(window.supabase) sb = window.supabase.createClient(SB_URL, SB_KEY); }catch(e){}
 const COLS = ['products','services','movements','sessions','stocklog','settings'];
+let syncedOnce = false;   // true cuando ya se intentó bajar los datos de la nube (o no hay nube): recién ahí es seguro abrir caja
 let user = null, syncing = false, again = false, syncTimer = null, syncState = 'ok';
 const syncMap = k => { try{ return JSON.parse(localStorage.getItem('caja_sync_'+k)) || {}; }catch{ return {}; } };
 const saveMap = (k,m) => localStorage.setItem('caja_sync_'+k, JSON.stringify(m));
@@ -360,7 +361,7 @@ async function pullAll(){
 
 async function sync(pull){
   if(!sb || !user) return;
-  if(!navigator.onLine){ setStatus('off'); return; }
+  if(!navigator.onLine){ setStatus('off'); if(!syncedOnce){ syncedOnce = true; if(!dlg.open) render(); } return; }
   if(syncing){ again = true; return; }
   syncing = true; setStatus('sync');
   const before = pull ? JSON.stringify(COLS.map(k => S[k])) : null;
@@ -368,9 +369,10 @@ async function sync(pull){
     await pushAll();
     if(pull) await pullAll();
     setStatus('ok');
-    if(pull && JSON.stringify(COLS.map(k => S[k])) !== before && !dlg.open) render();
+    const first = pull && !syncedOnce; if(pull) syncedOnce = true;
+    if(pull && (first || JSON.stringify(COLS.map(k => S[k])) !== before) && !dlg.open) render();
     photoSync();
-  }catch(e){ console.error(e); setStatus('err'); }
+  }catch(e){ console.error(e); setStatus('err'); if(pull && !syncedOnce){ syncedOnce = true; if(!dlg.open) render(); } }
   syncing = false;
   if(again){ again = false; scheduleSync(); }
 }
@@ -612,15 +614,16 @@ function toggleVerified(id){
 function vCaja(){
   const s = openSession();
   if(!s){
-    const last = S.sessions.filter(x=>x.closedAt).slice(-1)[0];
+    const last = S.sessions.filter(x=>x.closedAt).sort((a,b) => a.closedAt < b.closedAt ? -1 : 1).slice(-1)[0];
+    const wait = !!(sb && user && !syncedOnce);
     $('#app').innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:14px"><h2 style="margin:0">Caja cerrada</h2>${eyeBtn()}</div>
-      <p class="mut">Abrí la caja con el efectivo inicial para poder registrar ventas y egresos.</p>
-      <div class="row"><div><label>Efectivo inicial</label><input id="op" inputmode="decimal" value="${last?last.counted:0}"></div>
-      <div class="fit"><button class="b" onclick="openCaja()">Abrir caja</button></div></div></div>` + closedList();
+      <p class="mut">${wait ? 'Sincronizando con la nube para traer el efectivo del último cierre…' : 'Abrí la caja con el efectivo inicial para poder registrar ventas y egresos.'}</p>
+      <div class="row"><div><label>Efectivo inicial</label><input id="op" inputmode="decimal" value="${last?last.counted:0}"${wait?' disabled':''}></div>
+      <div class="fit"><button class="b" onclick="openCaja()"${wait?' disabled':''}>Abrir caja</button></div></div></div>` + closedList();
     return;
   }
-  const r = summary(s);
-  $('#app').innerHTML = `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:14px"><h2 style="margin:0">Caja abierta <span class="mut" style="font-weight:400;font-size:13px">desde ${fdt(s.openedAt)}</span></h2>${eyeBtn()}</div>
+  const r = summary(s), nOpen = S.sessions.filter(x => !x.closedAt).length;
+  $('#app').innerHTML = (nOpen > 1 ? `<div class="card"><b class="low">⚠ Hay ${nOpen} cajas abiertas.</b> <span class="mut">Se muestra la más antigua. Cerrala y después cerrá la que sobra (contado $0 si está vacía).</span></div>` : '') + `<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:14px"><h2 style="margin:0">Caja abierta <span class="mut" style="font-weight:400;font-size:13px">desde ${fdt(s.openedAt)}</span></h2>${eyeBtn()}</div>
     <div class="grid">
       <div class="stat hero"><small>Efectivo esperado</small><b>${fmt(r.expectedCash)}</b></div>
       <div class="stat"><small>Ingresos</small><b class="in">${fmt(r.in)}</b></div>
@@ -646,7 +649,7 @@ function closedList(){
   if(!c.length) return '';
   return `<div class="card"><h2>Últimos cierres</h2><table><tr><th>Cierre</th><th class="r">Esperado</th><th class="r">Contado</th><th class="r">Diferencia</th><th class="r hide-s">Balance</th><th class="hide-s">Nota</th></tr>${c.map(x=>{const d=x.counted-x.expected;return `<tr><td>${fdt(x.closedAt)}</td><td class="r">${fmt(x.expected)}</td><td class="r">${fmt(x.counted)}</td><td class="r ${d<0?'out':d>0?'in':''}">${fmt(d)}</td><td class="r hide-s">${x.balance!==undefined ? fmt(x.balance) + (x.usdRate ? `<div class="mut" style="font-size:12px">${fmtUsd(x.balance / x.usdRate)}</div>` : '') : ''}</td><td class="hide-s mut">${esc(x.note||'')}</td></tr>`}).join('')}</table></div>`;
 }
-function openCaja(){ S.sessions.push({id:uid(), openedAt:new Date().toISOString(), opening:num($('#op').value)}); persist('sessions'); render(); }
+function openCaja(){ if(openSession()){ render(); return; } if(sb && user && !syncedOnce) return; S.sessions.push({id:uid(), openedAt:new Date().toISOString(), opening:num($('#op').value)}); persist('sessions'); render(); }
 
 function cerrarDlg(){
   const s = openSession(), r = summary(s);
