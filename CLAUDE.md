@@ -10,7 +10,9 @@
 - Tras publicar, el teléfono puede tardar una o dos aperturas completas en tomar la versión nueva.
 
 ## Datos
-- Backend: Supabase (`supabase/schema.sql`). Las fotos de productos viven en IndexedDB del dispositivo y se sincronizan por la tabla `photos`.
+- Backend: Supabase (`supabase/schema.sql`).
+- En el dispositivo todo vive en IndexedDB (base `caja_meta`, almacén `kv`): tablas en `data:<tabla>`, estado de sincronización en `map:<tabla>`, fotos en `foto:<id>`. `localStorage` queda solo para preferencias y como respaldo si IndexedDB no está disponible; `storeInit()` migra los datos viejos.
+- Las fotos de productos se sincronizan por la tabla `photos`.
 - Borrar los datos del sitio en el teléfono puede perder datos locales no sincronizados.
 
 ## Idioma

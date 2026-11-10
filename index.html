@@ -206,11 +206,22 @@ details{margin-bottom:12px}summary{cursor:pointer;color:var(--ac);font-weight:65
 
 <script>
 /* ===== Capa de datos =====
-   Hoy guarda en localStorage. Para pasar a Supabase / Vetturno se reemplaza
-   solo este objeto (load/save) por llamadas a las tablas products, services, movements, sessions. */
+   Los datos viven en memoria (S) y se guardan en IndexedDB del dispositivo (base caja_meta, claves "data:<tabla>" y "map:<tabla>").
+   Antes se guardaban en localStorage, que tiene un tope de ~5 MB: al llenarse dejaba de guardar ventas. storeInit() pasa lo que
+   hubiera en localStorage a IndexedDB la primera vez y recién después lo borra de ahí. Si IndexedDB no está disponible, se sigue
+   usando localStorage como antes. */
+let idbOK = false, storeErr = false;
+function storeFail(e){
+  console.error('No se pudo guardar en el dispositivo:', e);
+  if(storeErr) return; storeErr = true; updateBar();
+  alert('⚠ No se pudo guardar en este dispositivo (¿almacenamiento lleno?). Lo cargado sigue en pantalla y se sube a la nube si hay conexión: no cierres la app hasta ver "sincronizado" y avisá para revisarlo.');
+}
 const DB = {
   load(k){ try{ return JSON.parse(localStorage.getItem('caja_'+k)) || []; }catch{ return []; } },
-  save(k,v){ localStorage.setItem('caja_'+k, JSON.stringify(v)); }
+  save(k,v){
+    if(idbOK){ idbSet('data:'+k, v).catch(storeFail); return; }
+    try{ localStorage.setItem('caja_'+k, JSON.stringify(v)); }catch(e){ storeFail(e); }
+  }
 };
 const S = { products: DB.load('products'), services: DB.load('services'), movements: DB.load('movements'), sessions: DB.load('sessions'), stocklog: DB.load('stocklog'), settings: DB.load('settings') };
 const persist = k => { DB.save(k, S[k]); scheduleSync(); };
@@ -296,8 +307,39 @@ let syncedOnce = false;   // true cuando ya se intentó bajar los datos de la nu
 let user = null, syncing = false, again = false, againPull = false, syncTimer = null, syncState = 'ok';
 let loggingOut = false;   // mientras se cierra la sesión no se sincroniza: sin sesión Supabase responde vacío sin error
 const NEVER_EMPTY = ['movements','sessions','settings'];   // tablas que en uso normal nunca quedan vacías
-const syncMap = k => { try{ return JSON.parse(localStorage.getItem('caja_sync_'+k)) || {}; }catch{ return {}; } };
-const saveMap = (k,m) => localStorage.setItem('caja_sync_'+k, JSON.stringify(m));
+const MAPS = {};   // por tabla: id → JSON de lo último que se sabe que está en la nube
+const legacyMap = k => { try{ return JSON.parse(localStorage.getItem('caja_sync_'+k)) || {}; }catch{ return {}; } };
+const syncMap = k => MAPS[k] || (MAPS[k] = legacyMap(k));
+function saveMap(k, m){
+  MAPS[k] = m;
+  if(idbOK){ idbSet('map:'+k, m).catch(storeFail); return; }
+  try{ localStorage.setItem('caja_sync_'+k, JSON.stringify(m)); }catch(e){ storeFail(e); }
+}
+/* Pasa los datos a IndexedDB. Fase 1: escribe todo en IndexedDB. Fase 2: solo si todo salió bien, borra las copias de localStorage.
+   Si quedó algo en localStorage después de haber migrado (una versión vieja de la app corrió sin conexión), se une por id y
+   gana lo de localStorage, que es lo más nuevo; la sincronización termina de emparejar. */
+async function storeInit(){
+  try{
+    await idbOpen();
+    const next = {}, maps = {};
+    for(const k of COLS){
+      const v = await idbGet('data:'+k), legacy = localStorage.getItem('caja_'+k) !== null;
+      let arr = Array.isArray(v) ? v : null;
+      if(arr && legacy && S[k].length){
+        const by = {}; arr.forEach(d => by[d.id] = d); S[k].forEach(d => by[d.id] = d); arr = Object.values(by);
+        if(k==='movements' || k==='stocklog') arr.sort((x,y) => x.ts < y.ts ? -1 : 1);
+        if(k==='sessions') arr.sort((x,y) => x.openedAt < y.openedAt ? -1 : 1);
+      } else if(!arr) arr = S[k];
+      const m = await idbGet('map:'+k);
+      next[k] = arr; maps[k] = m && typeof m === 'object' ? m : legacyMap(k);
+      if(!Array.isArray(v) || legacy){ await idbSet('data:'+k, arr); await idbSet('map:'+k, maps[k]); }
+    }
+    COLS.forEach(k => { S[k] = next[k]; MAPS[k] = maps[k]; });
+    idbOK = true;
+    COLS.forEach(k => { try{ localStorage.removeItem('caja_'+k); localStorage.removeItem('caja_sync_'+k); }catch(e){} });
+    try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); }catch(e){}
+  }catch(e){ console.warn('IndexedDB no disponible: se sigue guardando en localStorage.', e); idbOK = false; }
+}
 const chunks = (a,n) => { const o=[]; for(let i=0;i<a.length;i+=n) o.push(a.slice(i,i+n)); return o; };
 const hasAccess = () => !sb ? !!localStorage.getItem('caja_user_email') : (!!user || (!navigator.onLine && !!localStorage.getItem('caja_user_email')));
 
@@ -305,7 +347,7 @@ function setStatus(s){ syncState = s; updateBar(); }
 function updateBar(){
   const el = $('#stat'); if(!el) return;
   if(!sb || !hasAccess()){ el.textContent = ''; return; }
-  const st = {ok:'☁ sincronizado', sync:'☁ sincronizando…', err:'⚠ error al sincronizar', off:'☁ sin conexión'}[syncState] || '';
+  const st = (storeErr ? '⚠ no se guarda en este dispositivo · ' : '') + {ok:'☁ sincronizado', sync:'☁ sincronizando…', err:'⚠ error al sincronizar', off:'☁ sin conexión'}[syncState];
   el.innerHTML = `${st} · <a href="#" onclick="logout();return false" style="color:inherit">Salir</a>`;
 }
 function scheduleSync(){ if(!sb || !user) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => sync(false), 1200); }
@@ -426,6 +468,7 @@ async function logout(){
 }
 async function boot(){
   applyTheme();
+  await storeInit();
   await refreshUser();
   if(sb){
     sb.auth.onAuthStateChange((ev, s) => { user = s ? s.user : null; });
@@ -474,7 +517,8 @@ function render(){
 /* ===== RESPALDO =====
    Al cerrar el día se guarda un JSON en la carpeta elegida (ej. Google Drive para escritorio)
    o, si no hay carpeta, se descarga. Cuando haya Supabase esto pasa a ser secundario. */
-const idbOpen = () => new Promise((res,rej) => { const r = indexedDB.open('caja_meta',1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+let idbConn = null;
+const idbOpen = () => idbConn || (idbConn = new Promise((res,rej) => { let r; try{ r = indexedDB.open('caja_meta',1); }catch(e){ idbConn = null; rej(e); return; } r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => { r.result.onclose = () => { idbConn = null; }; res(r.result); }; r.onerror = () => { idbConn = null; rej(r.error); }; }));
 const idbGet = async k => { const db = await idbOpen(); return new Promise((res,rej) => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); };
 const idbDel = async k => { const db = await idbOpen(); return new Promise((res,rej) => { const t = db.transaction('kv','readwrite'); t.objectStore('kv').delete(k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); };
 const idbSet = async (k,v) => { const db = await idbOpen(); return new Promise((res,rej) => { const t = db.transaction('kv','readwrite'); t.objectStore('kv').put(v,k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); };
@@ -1086,7 +1130,7 @@ let pendFoto, fotoFor = null;   // pendFoto: undefined = sin cambios, texto = fo
 async function loadFotos(){
   try{
     const db = await idbOpen();
-    await new Promise(res => { const rq = db.transaction('kv').objectStore('kv').openCursor();
+    await new Promise(res => { const rq = db.transaction('kv').objectStore('kv').openCursor(IDBKeyRange.bound('foto:', 'foto:\uffff'));
       rq.onsuccess = () => { const c = rq.result; if(!c){ res(); return; } if(String(c.key).startsWith('foto:')){ const id = String(c.key).slice(5), v = c.value; const o = typeof v === 'string' ? {img:v, ts:0, up:false} : v;
         if(o && o.img){ fotos[id] = o.img; fotoMeta[id] = {ts:o.ts||0, up:!!o.up}; } } c.continue(); };
       rq.onerror = () => res(); });
