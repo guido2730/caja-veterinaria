@@ -1,8 +1,8 @@
 // Primero red (para recibir actualizaciones) y, si no hay internet, lo guardado.
 // Solo se cachean los archivos de la app y la librería de acceso; las llamadas a la base nunca.
-const CACHE = 'caja-v29';
-const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable.png', './logo-cash.svg'];
-const CDN = ['cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
+const CACHE = 'caja-v30';
+const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable.png', './logo-cash.svg', './vendor/supabase-js-2.58.0.js'];
+const CDN = ['fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)));

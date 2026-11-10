@@ -15,5 +15,8 @@
 - Las fotos de productos se sincronizan por la tabla `photos`.
 - Borrar los datos del sitio en el teléfono puede perder datos locales no sincronizados.
 
+## Librerías
+- `vendor/supabase-js-2.58.0.js` es la copia exacta de `dist/umd/supabase.js` del paquete de npm `@supabase/supabase-js@2.58.0`. Para actualizarla, reemplazar el archivo, el `<script>` de `index.html` y la entrada en `FILES` de `sw.js`.
+
 ## Idioma
 - Interfaz y comunicación con el usuario en español.
