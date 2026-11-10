@@ -202,7 +202,8 @@ details{margin-bottom:12px}summary{cursor:pointer;color:var(--ac);font-weight:65
 <main id="app"></main>
 <dialog id="dlg"></dialog>
 <dialog id="camdlg"></dialog>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.js"></script>
+<!-- supabase-js 2.58.0, copia exacta del paquete de npm (dist/umd/supabase.js). Va en el repo para no depender de un CDN. -->
+<script src="vendor/supabase-js-2.58.0.js"></script>
 
 <script>
 /* ===== Capa de datos =====
@@ -228,6 +229,8 @@ const persist = k => { DB.save(k, S[k]); scheduleSync(); };
 
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random()));
 const $ = s => document.querySelector(s);
+// Texto cargado por el usuario como argumento de un onclick="…": cadena JS válida (JSON) y escapada para el atributo HTML.
+const jsArg = v => esc(JSON.stringify(String(v ?? '')));
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 /* Ojo de la pestaña Caja: oculta los montos solo en esa pantalla (no en Ganancias ni Historial). Mientras hay un diálogo abierto
    (cerrar caja, retiros) los montos se ven, porque ahí hay que verlos para decidir. La preferencia se recuerda en este dispositivo. */
@@ -676,7 +679,8 @@ function askRestorePass(env){
 function applyBackup(j){
   const d = j && j.data;
   if(!d || !Array.isArray(d.products) || !Array.isArray(d.movements) || !Array.isArray(d.sessions)){ alert('El archivo no es un respaldo de esta app.'); return; }
-  if(!confirm(`Esto REEMPLAZA los datos actuales por los del respaldo (${d.products.length} productos, ${d.movements.length} movimientos). ¿Continuar?`)) return;
+  const when = j.exportedAt ? ' del ' + fdt(j.exportedAt) : '';
+  if(!confirm(`Esto REEMPLAZA los datos actuales por los del respaldo${when} (${d.products.length} productos, ${d.movements.length} movimientos).\n\nTodo lo cargado DESPUÉS de ese respaldo (ventas, cierres, productos, stock) se borra de este dispositivo, de la nube y de los demás dispositivos. No se puede deshacer.\n\n¿Continuar?`)) return;
   ['products','services','movements','sessions','stocklog','settings'].forEach(k => { S[k] = d[k] || []; persist(k); });
   cart = []; render();
 }
@@ -786,8 +790,10 @@ function closedList(){
 }
 function openCaja(){ if(openSession()){ render(); return; } if(sb && user && !syncedOnce) return; S.sessions.push({id:uid(), openedAt:new Date().toISOString(), opening:num($('#op').value)}); persist('sessions'); render(); }
 
+let closingId = null;   // caja que se está cerrando: un segundo toque en "Confirmar cierre" no cierra otra
 function cerrarDlg(){
   const s = openSession(), r = summary(s);
+  closingId = s.id;
   modal(`<h2>Cerrar caja</h2><p>Efectivo esperado: <b>${fmt(r.expectedCash)}</b></p>
     <details><summary>Contar billetes</summary><div class="bills">${DEN.map(d=>`<div><span>${fmt(d).replace(',00','')}</span><input class="bill" type="number" min="0" inputmode="numeric" placeholder="0" data-d="${d}" oninput="sumBills()"></div>`).join('')}</div></details>
     <div class="field"><label>Efectivo contado</label><input id="cnt" inputmode="decimal" value="${r.expectedCash}" oninput="diffInfo()"></div>
@@ -846,9 +852,11 @@ function diffInfo(){
   $('#dinfo').innerHTML = d===0 ? 'Sin diferencia ✔' : `Diferencia: <b class="${d<0?'out':'in'}">${fmt(d)}</b> ${d<0?'(falta)':'(sobra)'}`;
 }
 function cerrarCaja(){
-  const s = openSession(), r = summary(s);
+  const s = S.sessions.find(x => x.id===closingId && !x.closedAt); if(!s) return;
+  const r = summary(s);
   const counted = num($('#cnt').value), diff = r2(counted - r.expectedCash), note = $('#cnote').value.trim();
   if(diff!==0 && !note){ alert('Hay una diferencia de '+fmt(diff)+'. Escribí una nota para explicarla.'); return; }
+  closingId = null;
   s.closedAt = new Date().toISOString(); s.expected = r.expectedCash; s.counted = counted; s.note = note;
   const rate = num($('#usdr') ? $('#usdr').value : 0);
   s.balance = r.in - r.out;
@@ -1028,9 +1036,10 @@ function topUsed(n){
   return Object.values(acc).sort((x, y) => y.n - x.n).map(a => {
     if(a.i.productId){ const p = S.products.find(x => x.id===a.i.productId); return p && !p.internal ? {label:pname(p), price:p.price, act:`addProduct('${p.id}')`} : null; }
     const s = S.services.find(x => x.name.toLowerCase()===a.i.name.toLowerCase());
-    return s ? {label:s.name, price:s.price, act:`pickService('${s.id}')`} : {label:a.i.name, price:a.i.price, act:`cart.push({productId:null,name:'${esc(a.i.name).replace(/'/g, '')}',price:${a.i.price},qty:1});drawCart()`};
+    return s ? {label:s.name, price:s.price, act:`pickService('${s.id}')`} : {label:a.i.name, price:a.i.price, act:`addFreeQuick(${jsArg(a.i.name)},${+a.i.price||0})`};
   }).filter(Boolean).slice(0, n);
 }
+function addFreeQuick(name, price){ cart.push({productId:null, name, price, qty:1}); drawCart(); }
 function topUsedHtml(){
   const r = topUsed(8);
   return r.length ? '<div class="mut" style="font-size:13px;margin:10px 0 6px">Más usados</div><div class="chips">' + r.map(x => `<button class="s" onclick="${x.act}">${esc(x.label)} · ${fmt(x.price)}</button>`).join('') + '</div>' : '';
@@ -1473,11 +1482,11 @@ function drawFound(){
   const code = stockFound.code || (stockFound.product && stockFound.product.barcode) || '';
   const base = stockFound.product && S.products.find(x => x.id===stockFound.product.id);
   const list = (code ? S.products.filter(x => x.barcode===code) : base ? S.products.filter(x => sameFam(base, x)) : []).sort((x, y) => (x.presentation||'').localeCompare(y.presentation||''));
-  if(!list.length){ f.innerHTML = `<div class="stat"><div class="found"><div>Código <b>${esc(code)}</b> no está cargado.</div><button class="b" onclick="newProductDlg('${esc(code)}')">Cargar producto</button></div></div>`; return; }
+  if(!list.length){ f.innerHTML = `<div class="stat"><div class="found"><div>Código <b>${esc(code)}</b> no está cargado.</div><button class="b" onclick="newProductDlg(${jsArg(code)})">Cargar producto</button></div></div>`; return; }
   f.innerHTML = list.map(p => `<div class="stat"><div class="found">${withFoto(p, `<div><b>${esc(p.name)}</b>${p.presentation?' <span class="tag">'+esc(p.presentation)+'</span>':''}${p.internal?' <span class="tag">uso interno</span>':''}<div class="mut">${p.barcode ? 'Código ' + esc(p.barcode) : 'Sin código'}${p.category?' · '+esc(p.category):''}</div></div>`, true)}
     ${p.internal?'':`<div class="p">${fmt(p.price)}</div>`}<div>Stock: <b class="${p.stock<=0?'out':''}">${p.stock}</b></div></div>
     <div class="row" style="margin-top:10px"><div class="fit"><button class="b" onclick="addStockDlg('${p.id}')">+ Agregar unidades</button></div><div class="fit"><button class="s" onclick="useDlg('${p.id}')">Registrar uso</button></div>${p.contains && S.products.some(x => x.id===p.contains.to) ? `<div class="fit"><button class="s" onclick="openDlg('${p.id}')">Abrir</button></div>` : ''}<div class="fit"><button class="s" onclick="editProductDlg('${p.id}')">Editar</button></div></div></div>`).join('') +
-    `<div style="margin-top:8px"><button class="s" onclick="newProductDlg('${esc(code)}', '${list[0].id}')">+ Otra presentación${code ? ' de este código' : ' de este producto'}</button></div>`;
+    `<div style="margin-top:8px"><button class="s" onclick="newProductDlg(${jsArg(code)}, '${list[0].id}')">+ Otra presentación${code ? ' de este código' : ' de este producto'}</button></div>`;
 }
 const minOf = p => p.min ?? 3;
 let showAllP = false, showAllS = false;
@@ -1513,7 +1522,10 @@ function buyHint(internal, current){
   el.textContent = c > 0 ? 'Precio de venta nuevo: ' + fmt(salePrice(c)) + (current ? ' (ahora ' + fmt(current) + ')' : '') : 'Si lo cargás, el precio de venta pasa a ser compra × ' + String(MARKUP).replace('.', ',') + '. Precio actual: ' + fmt(current) + '.';
 }
 function addStock(id){
-  const p=S.products.find(x=>x.id===id); const n=Math.round(num($('#au').value)), cost=num($('#ac').value);
+  const p=S.products.find(x=>x.id===id); if(!p) return;
+  const n=Math.round(num($('#au').value)), cost=num($('#ac').value);
+  if(n < 0){ alert('Para descontar unidades usá "Registrar uso". Acá poné 0 o más.'); return; }
+  if(n === 0 && !(cost > 0)){ alert('Poné cuántas unidades sumás (o el precio de compra, si solo querés actualizarlo).'); return; }
   p.stock+=n;
   let note = '';
   if(cost > 0){ p.cost = cost; note = 'compra ' + fmt(cost); if(!p.internal){ const np = salePrice(cost); if(np !== p.price) note += ', venta ' + fmt(p.price) + ' → ' + fmt(np); p.price = np; } }
