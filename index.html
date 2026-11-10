@@ -305,6 +305,7 @@ try{ if(window.supabase) sb = window.supabase.createClient(SB_URL, SB_KEY); }cat
 const COLS = ['products','services','movements','sessions','stocklog','settings'];
 let syncedOnce = false;   // true cuando ya se intentó bajar los datos de la nube (o no hay nube): recién ahí es seguro abrir caja
 let user = null, syncing = false, again = false, againPull = false, syncTimer = null, syncState = 'ok';
+let stockMerged = false;   // en la última subida se unió stock con otro dispositivo: hay que redibujar
 let loggingOut = false;   // mientras se cierra la sesión no se sincroniza: sin sesión Supabase responde vacío sin error
 const NEVER_EMPTY = ['movements','sessions','settings'];   // tablas que en uso normal nunca quedan vacías
 const MAPS = {};   // por tabla: id → JSON de lo último que se sabe que está en la nube
@@ -354,8 +355,39 @@ function scheduleSync(){ if(!sb || !user) return; clearTimeout(syncTimer); syncT
 
 // Si una tabla todavía no existe en Supabase (ej. la del historial de stock), se la saltea sin romper el resto.
 const missingTable = e => !!e && (e.code==='PGRST205' || e.code==='42P01' || /could not find the table|does not exist/i.test(e.message||''));
+/* Productos: unión de tres vías entre lo último sincronizado (base), este dispositivo (l) y la nube (r).
+   El stock no se pisa: se aplica a la nube la DIFERENCIA que hizo este dispositivo (si acá se vendieron 3 y en otro 2, se
+   descuentan 5). En el resto de los campos, lo que este dispositivo no tocó toma el valor de la nube y lo que sí tocó se conserva. */
+const jeq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+function mergeProduct(base, l, r){
+  const m = {...l};
+  new Set([...Object.keys(base), ...Object.keys(l), ...Object.keys(r)]).forEach(f => {
+    if(f==='id' || f==='stock') return;
+    if(jeq(l[f], base[f])){ if(f in r) m[f] = r[f]; else delete m[f]; }
+  });
+  m.stock = Math.max(0, (+r.stock||0) + ((+l.stock||0) - (+base.stock||0)));
+  return m;
+}
+// Antes de subir productos cambiados acá, mira si otro dispositivo también los cambió y los une en vez de pisarlos.
+async function mergeRemoteProducts(map){
+  const ids = S.products.filter(d => map[d.id] !== undefined && map[d.id] !== JSON.stringify(d)).map(d => d.id);
+  let merged = false;
+  for(const part of chunks(ids, 200)){
+    const { data, error } = await sb.from('products').select('id,data').in('id', part);
+    if(error) throw error;
+    (data || []).forEach(r => {
+      const rj = JSON.stringify(r.data); if(rj === map[r.id]) return;   // la nube no cambió desde la última sincronización
+      const i = S.products.findIndex(d => d.id===r.id); if(i < 0) return;
+      let base; try{ base = JSON.parse(map[r.id]); }catch(e){ return; }
+      S.products[i] = mergeProduct(base, S.products[i], r.data); map[r.id] = rj; merged = true;
+    });
+  }
+  if(merged){ DB.save('products', S.products); saveMap('products', map); }
+  return merged;
+}
 async function pushOne(k){
   const map = syncMap(k), cur = {};
+  if(k==='products' && await mergeRemoteProducts(map)) stockMerged = true;
   S[k].forEach(d => cur[d.id] = JSON.stringify(d));
   const up = S[k].filter(d => map[d.id] !== cur[d.id]);
   const del = Object.keys(map).filter(id => !(id in cur));
@@ -395,8 +427,12 @@ async function pullOne(k){
   const out = [];
   for(const id in remote){
     const l = local[id];
-    // si el local tiene un cambio todavía no subido, gana el local
-    if(l && oldMap[id] !== undefined && JSON.stringify(l) !== oldMap[id]) out.push(l); else out.push(remote[id]);
+    // si el local tiene un cambio todavía no subido, gana el local; en productos, si la nube también cambió, se unen
+    if(l && oldMap[id] !== undefined && JSON.stringify(l) !== oldMap[id]){
+      let base = null;
+      if(k==='products' && newMap[id] !== oldMap[id]){ try{ base = JSON.parse(oldMap[id]); }catch(e){} }
+      out.push(base ? mergeProduct(base, l, remote[id]) : l);
+    } else out.push(remote[id]);
   }
   for(const id in local){
     if(!(id in remote) && (!(id in oldMap) || JSON.stringify(local[id]) !== oldMap[id])) out.push(local[id]);
@@ -421,6 +457,7 @@ async function sync(pull){
     await pushAll();
     if(pull && !loggingOut && user) await pullAll();
     setStatus('ok');
+    if(stockMerged){ stockMerged = false; if(!pull && !dlg.open && view==='stock') render(); }
     const first = pull && !syncedOnce; if(pull) syncedOnce = true;
     if(pull && (first || JSON.stringify(COLS.map(k => S[k])) !== before) && !dlg.open) render();
     photoSync();
