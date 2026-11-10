@@ -236,7 +236,9 @@ const today = () => dayOf(new Date().toISOString());
 const METHODS = ['efectivo','tarjeta','transferencia','qr'];
 const ML = m => m==='qr' ? 'QR' : m.charAt(0).toUpperCase()+m.slice(1);
 const mopts = sel => METHODS.map(m=>`<option value="${m}"${m===sel?' selected':''}>${ML(m)}</option>`).join('');
-const num = v => { let s = String(v ?? '').trim(); if(s.includes(',')) s = s.replace(/\./g,'').replace(',','.'); const n = parseFloat(s); return isNaN(n) ? 0 : n; };
+/* Montos como se escriben en Argentina: "84.000" = 84000, "1.500,50" = 1500.5. Sin coma, un punto seguido de exactamente
+   3 dígitos es separador de miles (ningún monto en pesos lleva 3 decimales); "10.5" sigue siendo diez y medio. */
+const num = v => { let s = String(v ?? '').replace(/[\s$]/g,''); if(s.includes(',')) s = s.replace(/\./g,'').replace(',','.'); else if(/^[+-]?\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g,''); const n = parseFloat(s); return isNaN(n) ? 0 : n; };
 const r2 = n => Math.round(n*100)/100;
 const DEN = [20000,10000,2000,1000,500,200,100,50,20,10];
 
@@ -291,7 +293,9 @@ let sb = null;
 try{ if(window.supabase) sb = window.supabase.createClient(SB_URL, SB_KEY); }catch(e){}
 const COLS = ['products','services','movements','sessions','stocklog','settings'];
 let syncedOnce = false;   // true cuando ya se intentó bajar los datos de la nube (o no hay nube): recién ahí es seguro abrir caja
-let user = null, syncing = false, again = false, syncTimer = null, syncState = 'ok';
+let user = null, syncing = false, again = false, againPull = false, syncTimer = null, syncState = 'ok';
+let loggingOut = false;   // mientras se cierra la sesión no se sincroniza: sin sesión Supabase responde vacío sin error
+const NEVER_EMPTY = ['movements','sessions','settings'];   // tablas que en uso normal nunca quedan vacías
 const syncMap = k => { try{ return JSON.parse(localStorage.getItem('caja_sync_'+k)) || {}; }catch{ return {}; } };
 const saveMap = (k,m) => localStorage.setItem('caja_sync_'+k, JSON.stringify(m));
 const chunks = (a,n) => { const o=[]; for(let i=0;i<a.length;i+=n) o.push(a.slice(i,i+n)); return o; };
@@ -337,7 +341,13 @@ async function pullOne(k){
     rows = rows.concat(data);
     if(data.length < 1000) break;
   }
+  /* Sin sesión, Supabase devuelve una lista vacía SIN error (las políticas solo dejan leer a usuarios autenticados). Si eso se
+     tomara como "se borró todo en otro dispositivo", se vaciarían los datos de este. Por eso se confirma la sesión después de leer
+     y se desconfía de una tabla que vuelve vacía cuando acá tenía datos ya sincronizados. */
+  const { data: au } = await sb.auth.getSession();
+  if(loggingOut || !user || !au || !au.session) throw new Error('Sincronización cancelada: la sesión se cerró mientras se bajaban los datos.');
   const remote = {}, newMap = {}, oldMap = syncMap(k), local = {};
+  if(!rows.length && NEVER_EMPTY.includes(k) && Object.keys(oldMap).length) throw new Error('La nube devolvió "' + k + '" vacía: no se toca lo guardado en este dispositivo.');
   rows.forEach(r => { remote[r.id] = r.data; newMap[r.id] = JSON.stringify(r.data); });
   S[k].forEach(d => local[d.id] = d);
   const out = [];
@@ -360,21 +370,22 @@ async function pullAll(){
 }
 
 async function sync(pull){
-  if(!sb || !user) return;
+  if(!sb || !user || loggingOut) return;
   if(!navigator.onLine){ setStatus('off'); if(!syncedOnce){ syncedOnce = true; if(!dlg.open) render(); } return; }
-  if(syncing){ again = true; return; }
+  if(syncing){ again = true; if(pull) againPull = true; return; }
   syncing = true; setStatus('sync');
   const before = pull ? JSON.stringify(COLS.map(k => S[k])) : null;
   try{
     await pushAll();
-    if(pull) await pullAll();
+    if(pull && !loggingOut && user) await pullAll();
     setStatus('ok');
     const first = pull && !syncedOnce; if(pull) syncedOnce = true;
     if(pull && (first || JSON.stringify(COLS.map(k => S[k])) !== before) && !dlg.open) render();
     photoSync();
   }catch(e){ console.error(e); setStatus('err'); if(pull && !syncedOnce){ syncedOnce = true; if(!dlg.open) render(); } }
   syncing = false;
-  if(again){ again = false; scheduleSync(); }
+  // si mientras tanto se pidió bajar datos (ej. recién se ingresó), se baja de verdad: no alcanza con subir
+  if(again){ const p = againPull; again = againPull = false; if(p) sync(true); else scheduleSync(); }
 }
 
 async function refreshUser(){
@@ -400,10 +411,18 @@ async function login(){
   user = data.user; localStorage.setItem('caja_user_email', user.email); noteAct();
   render(); sync(true);
 }
+async function safeSignOut(){
+  loggingOut = true; clearTimeout(syncTimer);
+  try{
+    for(let i = 0; syncing && i < 150; i++) await new Promise(r => setTimeout(r, 100));   // hasta 15 s
+    if(sb) await sb.auth.signOut();
+  }catch(e){}
+  user = null; syncedOnce = false; again = againPull = false; loggingOut = false;
+}
 async function logout(){
   if(user && !confirm('Si cerrás sesión con cambios sin subir, se suben al volver a entrar. ¿Salir?')) return;
-  try{ if(sb) await sb.auth.signOut(); }catch(e){}
-  user = null; localStorage.removeItem('caja_user_email'); render();
+  await safeSignOut();
+  localStorage.removeItem('caja_user_email'); render();
 }
 async function boot(){
   applyTheme();
@@ -1673,7 +1692,7 @@ function noteAct(){
   const w = $('#idlew'); if(w) w.remove();
 }
 function idleCheck(){
-  if(!user) return;
+  if(!user || loggingOut) return;
   const idle = Date.now() - lastAct, left = idleMin()*60e3 - idle;
   if(ganUnlocked && idle > 120e3){ ganUnlocked = false; if(PROT.includes(view)) render(); }
   if(left <= 0){ if(navigator.onLine) autoLogout(); return; }
@@ -1688,8 +1707,8 @@ async function autoLogout(){
   const w = $('#idlew'); if(w) w.remove();
   ganUnlocked = false;
   try{ if(dlg.open) closeModal(); }catch(e){}
-  try{ if(sb) await sb.auth.signOut(); }catch(e){}
-  user = null; localStorage.removeItem('caja_user_email'); localStorage.removeItem('caja_last_act');
+  await safeSignOut();
+  localStorage.removeItem('caja_user_email'); localStorage.removeItem('caja_last_act');
   loginNote = 'Se cerró la sesión por inactividad. Ingresá de nuevo.'; render();
 }
 function startIdle(){
