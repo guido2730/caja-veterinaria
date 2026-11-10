@@ -305,6 +305,7 @@ try{ if(window.supabase) sb = window.supabase.createClient(SB_URL, SB_KEY); }cat
 const COLS = ['products','services','movements','sessions','stocklog','settings'];
 let syncedOnce = false;   // true cuando ya se intentó bajar los datos de la nube (o no hay nube): recién ahí es seguro abrir caja
 let user = null, syncing = false, again = false, againPull = false, syncTimer = null, syncState = 'ok';
+let lastPull = 0;   // cuándo terminó la última bajada: al volver a primer plano no se repite antes de 10 s
 let stockMerged = false;   // en la última subida se unió stock con otro dispositivo: hay que redibujar
 let loggingOut = false;   // mientras se cierra la sesión no se sincroniza: sin sesión Supabase responde vacío sin error
 const NEVER_EMPTY = ['movements','sessions','settings'];   // tablas que en uso normal nunca quedan vacías
@@ -385,21 +386,40 @@ async function mergeRemoteProducts(map){
   if(merged){ DB.save('products', S.products); saveMap('products', map); }
   return merged;
 }
+/* Bajada liviana. La primera bajada después de abrir la app (o de ingresar) trae las tablas completas y anota, por fila, la
+   fecha de modificación que tiene en la nube (VERS, solo en memoria). Las siguientes piden solo la lista de id + fecha y bajan el
+   contenido únicamente de las filas nuevas o con otra fecha. La fecha se usa como etiqueta de versión (se compara por igualdad),
+   así que no importa si el reloj de algún dispositivo está mal. Como la lista de ids sigue viniendo completa, los borrados hechos
+   en otro dispositivo se siguen detectando igual que antes. */
+const VERS = {}, fullDone = {};
+const verOf = t => { const n = Date.parse(t); return isNaN(n) ? null : n; };
+// Trae todas las filas de una consulta paginando con orden fijo (sin orden, las páginas pueden saltear o repetir filas).
+async function fetchAll(k, cols){
+  let rows = [];
+  for(let from = 0;; from += 1000){
+    const { data, error } = await sb.from(k).select(cols).order('id').range(from, from+999);
+    if(error) throw error;
+    rows = rows.concat(data || []);
+    if(!data || data.length < 1000) break;
+  }
+  return rows;
+}
 async function pushOne(k){
-  const map = syncMap(k), cur = {};
+  const map = syncMap(k), cur = {}, vers = VERS[k] || (VERS[k] = {});
   if(k==='products' && await mergeRemoteProducts(map)) stockMerged = true;
   S[k].forEach(d => cur[d.id] = JSON.stringify(d));
   const up = S[k].filter(d => map[d.id] !== cur[d.id]);
   const del = Object.keys(map).filter(id => !(id in cur));
   for(const part of chunks(up, 400)){
-    const { error } = await sb.from(k).upsert(part.map(d => ({id:d.id, data:d, updated_at:new Date().toISOString()})));
+    const stamp = new Date().toISOString();
+    const { error } = await sb.from(k).upsert(part.map(d => ({id:d.id, data:d, updated_at:stamp})));
     if(error) throw error;
-    part.forEach(d => map[d.id] = cur[d.id]); saveMap(k, map);
+    part.forEach(d => { map[d.id] = cur[d.id]; vers[d.id] = verOf(stamp); }); saveMap(k, map);
   }
   for(const part of chunks(del, 200)){
     const { error } = await sb.from(k).delete().in('id', part);
     if(error) throw error;
-    part.forEach(id => delete map[id]); saveMap(k, map);
+    part.forEach(id => { delete map[id]; delete vers[id]; }); saveMap(k, map);
   }
 }
 async function pushAll(){
@@ -408,12 +428,20 @@ async function pushAll(){
   }
 }
 async function pullOne(k){
-  let rows = [];
-  for(let from = 0;; from += 1000){
-    const { data, error } = await sb.from(k).select('id,data').range(from, from+999);
-    if(error) throw error;
-    rows = rows.concat(data);
-    if(data.length < 1000) break;
+  const full = !fullDone[k], known = syncMap(k), vers0 = VERS[k] || {};
+  let rows;
+  if(full) rows = await fetchAll(k, 'id,data,updated_at');
+  else {
+    const heads = await fetchAll(k, 'id,updated_at');
+    const need = heads.filter(h => known[h.id] === undefined || vers0[h.id] == null || verOf(h.updated_at) !== vers0[h.id]).map(h => h.id);
+    const needSet = new Set(need), got = {};
+    for(const part of chunks(need, 150)){
+      const { data, error } = await sb.from(k).select('id,data,updated_at').in('id', part);
+      if(error) throw error;
+      (data || []).forEach(r => got[r.id] = r);
+    }
+    // filas sin cambios: valen lo último sincronizado; las pedidas que ya no están (borradas justo ahora) se dejan afuera
+    rows = heads.map(h => got[h.id] || (needSet.has(h.id) ? null : {id:h.id, same:true, updated_at:h.updated_at})).filter(Boolean);
   }
   /* Sin sesión, Supabase devuelve una lista vacía SIN error (las políticas solo dejan leer a usuarios autenticados). Si eso se
      tomara como "se borró todo en otro dispositivo", se vaciarían los datos de este. Por eso se confirma la sesión después de leer
@@ -422,7 +450,13 @@ async function pullOne(k){
   if(loggingOut || !user || !au || !au.session) throw new Error('Sincronización cancelada: la sesión se cerró mientras se bajaban los datos.');
   const remote = {}, newMap = {}, oldMap = syncMap(k), local = {};
   if(!rows.length && NEVER_EMPTY.includes(k) && Object.keys(oldMap).length) throw new Error('La nube devolvió "' + k + '" vacía: no se toca lo guardado en este dispositivo.');
-  rows.forEach(r => { remote[r.id] = r.data; newMap[r.id] = JSON.stringify(r.data); });
+  const vers = {};
+  rows.forEach(r => {
+    vers[r.id] = verOf(r.updated_at);
+    if(r.same){ newMap[r.id] = oldMap[r.id]; remote[r.id] = null; }   // sin cambios en la nube: no se bajó el contenido
+    else { remote[r.id] = r.data; newMap[r.id] = JSON.stringify(r.data); }
+  });
+  const remoteDoc = id => remote[id] || JSON.parse(oldMap[id]);
   S[k].forEach(d => local[d.id] = d);
   const out = [];
   for(const id in remote){
@@ -432,14 +466,14 @@ async function pullOne(k){
       let base = null;
       if(k==='products' && newMap[id] !== oldMap[id]){ try{ base = JSON.parse(oldMap[id]); }catch(e){} }
       out.push(base ? mergeProduct(base, l, remote[id]) : l);
-    } else out.push(remote[id]);
+    } else out.push(remote[id] === null && l ? l : remoteDoc(id));
   }
   for(const id in local){
     if(!(id in remote) && (!(id in oldMap) || JSON.stringify(local[id]) !== oldMap[id])) out.push(local[id]);
   }
   if(k==='movements' || k==='stocklog') out.sort((a,b) => a.ts < b.ts ? -1 : 1);
   if(k==='sessions') out.sort((a,b) => a.openedAt < b.openedAt ? -1 : 1);
-  S[k] = out; DB.save(k, out); saveMap(k, newMap);
+  S[k] = out; DB.save(k, out); saveMap(k, newMap); VERS[k] = vers; fullDone[k] = true;
 }
 async function pullAll(){
   for(const k of COLS){
@@ -458,7 +492,7 @@ async function sync(pull){
     if(pull && !loggingOut && user) await pullAll();
     setStatus('ok');
     if(stockMerged){ stockMerged = false; if(!pull && !dlg.open && view==='stock') render(); }
-    const first = pull && !syncedOnce; if(pull) syncedOnce = true;
+    const first = pull && !syncedOnce; if(pull){ syncedOnce = true; lastPull = Date.now(); }
     if(pull && (first || JSON.stringify(COLS.map(k => S[k])) !== before) && !dlg.open) render();
     photoSync();
   }catch(e){ console.error(e); setStatus('err'); if(pull && !syncedOnce){ syncedOnce = true; if(!dlg.open) render(); } }
@@ -497,6 +531,7 @@ async function safeSignOut(){
     if(sb) await sb.auth.signOut();
   }catch(e){}
   user = null; syncedOnce = false; again = againPull = false; loggingOut = false;
+  COLS.forEach(k => { delete fullDone[k]; delete VERS[k]; });
 }
 async function logout(){
   if(user && !confirm('Si cerrás sesión con cambios sin subir, se suben al volver a entrar. ¿Salir?')) return;
@@ -511,7 +546,7 @@ async function boot(){
     sb.auth.onAuthStateChange((ev, s) => { user = s ? s.user : null; });
     window.addEventListener('online', async () => { await refreshUser(); if(user) sync(true); else render(); });
     window.addEventListener('offline', () => setStatus('off'));
-    document.addEventListener('visibilitychange', () => { if(!document.hidden && user) sync(true); });
+    document.addEventListener('visibilitychange', () => { if(!document.hidden && user && Date.now() - lastPull > 10000) sync(true); });
   }
   startIdle();
   render();
